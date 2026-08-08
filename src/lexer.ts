@@ -30,6 +30,7 @@ export type TokenKind =
   | ">" // greater than
   | "<=" // less than or equal
   | ">=" // greater than or equal
+  | "=" // assignment (binary, right-associative)
   // multi-char / value-bearing
   | "identifier"
   | "constant"
@@ -78,7 +79,8 @@ const OPERATORS: TokenKind[] = [
   "%",
   "&&",
   "||",
-  "==",
+  "==", // must precede "="
+  "=",
   "!=", // must precede "!"
   "!",
   "<=", // must precede "<"

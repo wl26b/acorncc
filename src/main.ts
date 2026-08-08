@@ -1,11 +1,12 @@
 // The compiler driver. Implements the command-line contract that Sandler's test
 // suite expects:
 //
-//   acorncc foo.c            -> produce executable ./foo (assemble + link), exit 0
-//   acorncc --lex foo.c      -> run the lexer only; write NO files
-//   acorncc --parse foo.c    -> run through the parser; write NO files
-//   acorncc --codegen foo.c  -> run through codegen; write NO files
-//   acorncc -S foo.c         -> emit foo.s assembly; do not assemble/link
+//   acorncc foo.c             -> produce executable ./foo (assemble + link), exit 0
+//   acorncc --lex foo.c       -> run the lexer only; write NO files
+//   acorncc --parse foo.c     -> run through the parser; write NO files
+//   acorncc --validate foo.c  -> run through semantic analysis; write NO files
+//   acorncc --codegen foo.c   -> run through codegen; write NO files
+//   acorncc -S foo.c          -> emit foo.s assembly; do not assemble/link
 //
 // On ANY compile error: exit non-zero and leave no output files behind. Because
 // we only write files at the very end (after all in-memory stages succeed),
@@ -17,9 +18,11 @@ import { basename, dirname, extname, join } from "node:path";
 
 import { lex } from "./lexer.js";
 import { parse } from "./parser.js";
+import { resolve } from "./resolve.js";
 import { generate } from "./codegen.js";
 
-type Stage = "lex" | "parse" | "codegen" | "assembly" | "executable";
+type Stage =
+  "lex" | "parse" | "validate" | "codegen" | "assembly" | "executable";
 
 interface Options {
   stage: Stage;
@@ -37,6 +40,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case "--parse":
         stage = "parse";
+        break;
+      case "--validate":
+        stage = "validate";
         break;
       case "--codegen":
         stage = "codegen";
@@ -81,8 +87,15 @@ function main(): void {
   const ast = parse(tokens);
   if (stage === "parse") return;
 
+  // --- Middle: semantic analysis. Rejects programs that PARSE but don't mean
+  // anything (undeclared names, duplicate declarations, assigning to a
+  // non-lvalue), and resolves every name to the declaration it refers to. Takes
+  // an AST and returns an AST, so codegen never has to ask those questions. ---
+  const resolved = resolve(ast);
+  if (stage === "validate") return;
+
   // --- Back end: AST -> assembly text. ---
-  const asm = generate(ast);
+  const asm = generate(resolved);
   if (stage === "codegen") return;
 
   // From here on we produce files. Compute sibling paths next to the source:
