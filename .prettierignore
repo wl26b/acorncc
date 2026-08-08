@@ -1,0 +1,11 @@
+# Not ours / generated
+node_modules
+dist
+writing-a-c-compiler-tests
+
+# Hand-wrapped prose — kept out of Prettier on purpose so it doesn't fight the
+# deliberate line breaks in CLAUDE.md and the docs. Format code, not prose.
+*.md
+
+# Local/editor state
+.claude

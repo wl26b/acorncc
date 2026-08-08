@@ -1,0 +1,15 @@
+node_modules/
+dist/
+
+# Assembly we emit while compiling.
+*.s
+
+# The test suite is a separate upstream repo; don't vendor it into ours.
+writing-a-c-compiler-tests/
+
+# Machine-local tool state, not project config. A shared .claude/settings.json
+# would still be committable.
+.claude/settings.local.json
+
+# macOS.
+.DS_Store
