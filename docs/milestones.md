@@ -15,7 +15,7 @@ acorncc and passes its own test suite (M7).
 |---|-----------|--------|
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
-| M3 | Variables, scope, statements | 🔶 in progress (ch5: front end green) |
+| M3 | Variables, scope, statements | 🔶 in progress (ch5 green; ch6–7 to go) |
 | M4 | Control flow + functions (AAPCS64) | ⬜ — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
@@ -75,8 +75,21 @@ stack frames. Sandler ch5–7.
   shadowing stays distinguishable. Note the pass is *not* idempotent — a `Var`
   is rewritten from source spelling to unique name, and the unique name is not a
   key in the scope map, so each subexpression must be resolved exactly once.
-- ⬜ **Codegen** — real ARM64 stack frames (`sp`-relative slots, prologue and
-  teardown). Oracle: `clang -S -O1`.
+- ✅ **Codegen green — chapter 5 passes end to end (147/147).** Real ARM64 stack
+  frames. Three things worth remembering:
+  - **Locals anchor to `fp`, not `sp`.** The expression stack machine moves `sp`
+    mid-expression, so `[sp, #off]` names a different address depending on
+    nesting depth — `a + b` alone would read garbage. `mov sp, fp` in the
+    epilogue also repairs `sp` without knowing what was pushed.
+  - **`return` stopped being one instruction.** With a frame, it's tear-down
+    then branch. Falling off the end emits `mov w0, #0` first, unconditionally —
+    deciding whether a function always returns is a reachability analysis, not a
+    look at the last block item.
+  - **Constants are built from 16-bit chunks** (`movz` + optional `movk`),
+    because no 32-bit instruction can carry a 32-bit immediate.
+  - Oracle note: use `clang -S -O0` for frame layout — at `-O1` locals live in
+    registers and there's no frame to compare against. `-O1` stays better for
+    instruction selection.
 
 ### M4 — Control flow + functions ⬜ (conceptual peak)
 Loops (`for`/`while`), `switch`/`case`, then function definitions/calls →

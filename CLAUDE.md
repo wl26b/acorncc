@@ -123,17 +123,19 @@ associativity, and `== != < > <= >=` / `&& ||`. The driver preprocesses with
 call with `-nostdinc -I <ourheaders>`). Who wrote what:
 `docs/authorship-log.md`.
 
-**In progress → chapter 5: local variables**, the start of **M3 (variables,
-scope, statements)**. Lex, parse, and **validate** all green (147/147 each):
-declarations, assignment, block items, a Pratt table that now carries
-associativity and node kind as well as binding power, and `resolve.ts` — a new
-third pipeline stage (`--validate`) that rejects undeclared variables, duplicate
-declarations and invalid lvalues, and renames each variable uniquely for ch7's
-shadowing. **Remaining: codegen** — real ARM64 stack frames, `sp`-relative
-slots, prologue/teardown, plus arms for `Var`/`Assign`/`ExprStmt`/`Null` and
-`BlockItem[]` bodies. Then ch6 `if`/`?:`, ch7 blocks. Codegen is USER-writes;
-Claude specs + reviews; oracle `clang -S -O1`. The AAPCS64 "conceptual peak" and
-the likely AST→IR ("TACKY") split land around ch8–9 (M4), not now.
+**M3 in progress — chapter 5 green (147/147).** Local variables work end to end.
+The pipeline gained a **third stage**, `resolve.ts` (`--validate`), which rejects
+what parses but doesn't mean anything (undeclared variables, duplicate
+declarations, invalid lvalues) and renames each variable uniquely so ch7's
+shadowing stays tractable. Codegen gained **real ARM64 stack frames**: slot
+layout, 16-byte alignment, and fp-anchored addressing — locals anchor to `fp`
+rather than `sp` because the expression stack machine moves `sp` mid-expression.
+
+**Next → chapter 6: `if` / `?:`**, then ch7 blocks. Codegen is USER-writes;
+Claude specs + reviews. Oracle: `clang -S -O0` for anything about stack frames
+(at `-O1` locals live in registers and there's no frame to diff against),
+`-O1` for instruction selection. The AAPCS64 "conceptual peak" and the likely
+AST→IR ("TACKY") split land around ch8–9 (M4), not now.
 
 ### Lessons banked
 
@@ -164,12 +166,17 @@ the likely AST→IR ("TACKY") split land around ch8–9 (M4), not now.
 
 ## Deferred bugs
 
-- `mov w0, #N` only encodes immediates fitting one movz/movk chunk (≤16 bits,
-  16-bit-aligned shift); e.g. `#70000` won't assemble. Fix with movz/movk pairs
-  or `ldr w0, =N` when constants get large (M5-ish). The fix must also cover the
-  **inverted (`movn`)** case: minilisp's `ROOT_END` is `((void *)-1)`. Its only
-  literal above 65535 is `MEMORY_SIZE 65536`, which happens to encode as
-  `movz #1, lsl #16` — so plain constants won't bite, but `-1` will.
+- ~~Large positive immediates~~ — **fixed in ch5.** Constants are now built from
+  16-bit chunks (`movz` + optional `movk, lsl #16`). The lesson worth keeping:
+  `mov Wd, #imm` is an *alias* the assembler satisfies with movz OR movn OR an
+  `orr` bitmask immediate, erroring if none fits rather than expanding to two
+  instructions — so which constants work is near-unpredictable (`#2147483646`
+  assembles, `#1431655762` does not). Emit `movz` explicitly and the guesswork
+  disappears.
+- **Still open: negative immediates**, which want the inverted `movn` form.
+  Unreachable today (the lexer only produces digit runs, so `-5` is unary
+  negation applied to `5`), but minilisp's `ROOT_END` is `((void *)-1)` — due at
+  M5. See `docs/minilisp-inventory.md` §6.4.
 
 ## Resources
 

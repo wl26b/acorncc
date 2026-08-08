@@ -49,20 +49,41 @@ carries its own.
 
 | M / ch | Commit | Component | Author | Claude's role |
 |--------|--------|-----------|--------|---------------|
-| — | — | *nothing yet — ch5 will be the first row* | — | — |
+| M3 / ch5 | `81f6ffe` | Lexer: `=` token | Claude | boilerplate (maximal-munch ordering after `==`) |
+| M3 / ch5 | `81f6ffe` | AST: `Declaration`, `Var`, `Assign`, `ExpressionStatement`, `Null`, `BlockItem` | **User** | reviewed shape — argued `init` must be a full `Expression` and optional, argued against a `typ` field until real types exist, suggested naming the `BlockItem` union and the `ExpressionStatement` rename |
+| M3 / ch5 | `81f6ffe` | Parser: `parseDeclaration`, three statement forms, `Var` atom | **User** | reviewed; caught the un-consumed `;`, suggested testing for `=` rather than for `;` |
+| M3 / ch5 | `81f6ffe` | Pratt table generalised to carry associativity + node kind (`=` right-assoc, non-`Binary`) | **User** | reviewed; caught `=` parsing left-associative, and that putting `"Assign"` in `BinaryOp` forces an unreachable arm in codegen's `never` guard |
+| M3 / ch5 | `81f6ffe` | Driver: `--validate` stage | Claude | boilerplate |
+| M3 / ch5 | `81f6ffe` | `resolve.ts` — the new semantic-analysis stage | **User → Claude-reviewed** | Claude scaffolded the file (structure + `TODO(you)` holes + contracts); user wrote all the logic; Claude caught the `exp.left`/`exp.right` typo that silently skipped right subtrees, then did error messages and comment cleanup |
+| M3 / ch5 | `47d0ce1` | Codegen: `layoutFrame`, fp-anchored slots, prologue/epilogue, `Var`/`Assign`/`Declaration` arms, `movz`/`movk` constants | **User → Claude-reviewed** | specced the ARM64 (frame layout, 16-byte alignment, `stp`/`ldp`, `fp` vs `sp` anchoring) and predicted the `sp`-moves-mid-expression trap before it was written; caught the `#--4` double-negation, `ret` firing before the epilogue, and the missing implicit `return 0`; extracted `slotOf`/`emitPrologue`/`emitEpilogue` and reworked comments |
 
 ## Running tally of user-authored work
 
-- **Front end:** unary + binary expression parsing, the entire Pratt loop
-  (incl. ch4's relational/equality/logical precedence tiers), all AST node
-  designs (`Unary`, `Binary`, and their operator tags).
+- **Front end:** unary + binary expression parsing, the entire Pratt loop (incl.
+  ch4's relational/equality/logical precedence tiers and ch5's generalisation to
+  carry associativity and node kind), all AST node designs (`Unary`, `Binary`
+  and their operator tags; `Declaration`, `Var`, `Assign`,
+  `ExpressionStatement`, `Null`, `BlockItem`), and the declaration/statement
+  parsing.
+- **Middle end:** all of `resolve.ts`'s logic — scope map, undeclared-variable
+  and duplicate-declaration checks, lvalue validation, and the unique-renaming
+  that makes ch7's shadowing tractable. (Claude scaffolded the file's structure;
+  the user filled every hole.)
 - **Back end:** all codegen written so far — constant returns, unary ops (incl.
-  `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), and
-  the short-circuit `&&`/`||` branch logic (the first codegen needing labels).
-- **Not yet touched by user (still ahead):** variables & stack frames, control
-  flow, functions/AAPCS64, types, aggregates.
+  `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), the
+  short-circuit `&&`/`||` branch logic, and ch5's **stack frames**: slot layout,
+  16-byte alignment, fp-anchored addressing, prologue/epilogue, and chunked
+  constants via `movz`/`movk`.
+- **Not yet touched by user (still ahead):** control flow (`if`/`?:`, loops,
+  `switch`), functions/AAPCS64, types, aggregates.
 
 ## Next up (so the log stays honest about what's user work vs. not)
 
-- **ch5 — local variables** (begins M3): declarations, assignment, a symbol
-  table + real ARM64 stack frames. USER-writes codegen; Claude specs/reviews.
+- **ch6 — `if` / `?:`** (continues M3): the `If` statement and `Conditional`
+  expression. `?:` goes in the Pratt table for its binding power but needs its
+  own branch in the loop — it must consume a middle expression and expect `:`,
+  so it can't share the generic two-operand fold. Codegen reuses the label and
+  branch machinery from `&&`/`||`; the new part is that `?:` must produce a
+  *value*, so both arms converge on the same register. USER-writes codegen;
+  Claude specs/reviews. Oracle: `clang -S -O0` for anything about frames,
+  `-O1` for instruction selection.
