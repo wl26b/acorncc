@@ -148,7 +148,7 @@ function parseStatement(ts: TokenStream): Statement {
     default: {
       const expr = parseExpression(ts, 0);
       ts.expect(";");
-      return { kind: "ExprStmt", exp: expr };
+      return { kind: "ExpressionStatement", exp: expr };
     }
   }
 }

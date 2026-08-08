@@ -69,7 +69,7 @@ function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
     case "Declaration": {
       return resolveDeclaration(item, scope);
     }
-    case "ExprStmt":
+    case "ExpressionStatement":
     case "Null":
     case "Return": {
       return resolveStatement(item, scope);
@@ -104,10 +104,10 @@ function resolveDeclaration(decl: Declaration, scope: Scope): Declaration {
 function resolveStatement(stmt: Statement, scope: Scope): Statement {
   switch (stmt.kind) {
     // Both hold a single `exp` and neither introduces a name, so they resolve
-    // identically — Return's value and ExprStmt's discarded value are the same
+    // identically — Return's value and ExpressionStatement's discarded value are the same
     // job from here.
     case "Return":
-    case "ExprStmt": {
+    case "ExpressionStatement": {
       stmt.exp = resolveExpression(stmt.exp, scope);
       return stmt;
     }

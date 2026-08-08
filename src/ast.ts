@@ -7,7 +7,7 @@
 //   block_item  = statement | declaration
 //   declaration = Declaration(identifier name, exp? init)
 //   statement   = Return(exp)
-//               | ExprStmt(exp)
+//               | ExpressionStatement(exp)
 //               | Null
 //   exp         = Constant(int)
 //               | Var(identifier)
@@ -44,7 +44,7 @@ export interface Declaration {
   init?: Expression;
 }
 
-export type Statement = Return | ExprStmt | Null;
+export type Statement = Return | ExpressionStatement | Null;
 
 export interface Return {
   kind: "Return";
@@ -52,8 +52,8 @@ export interface Return {
 }
 
 // An expression evaluated for its side effects, its value discarded: `a = 5;`.
-export interface ExprStmt {
-  kind: "ExprStmt";
+export interface ExpressionStatement {
+  kind: "ExpressionStatement";
   exp: Expression;
 }
 

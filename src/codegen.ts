@@ -1,4 +1,10 @@
-import type { Program, FunctionDef, Statement, Expression } from "./ast.js";
+import type {
+  Program,
+  FunctionDef,
+  Statement,
+  Declaration,
+  Expression,
+} from "./ast.js";
 
 // Codegen walks the AST and produces ARM64 (AArch64) assembly text for the
 // Apple/macOS toolchain. The driver writes this out as a `.s` file and hands it
@@ -14,6 +20,14 @@ import type { Program, FunctionDef, Statement, Expression } from "./ast.js";
 // In later chapters this splits into two stages (AST -> intermediate "TACKY" ->
 // assembly); for now a direct AST -> asm walk suffices, even for deeply nested
 // expressions and the short-circuit branching of `&&` / `||`.
+//
+// Locals live in a stack frame anchored to the FRAME POINTER (`fp`/x29), not to
+// `sp`. That matters because the expression stack machine below moves `sp`
+// mid-expression (see pushRegValOntoStack), so `[sp, #off]` would name a
+// different address depending on how deeply nested the expression was. `fp` is
+// set once in the prologue and never moves, so `[fp, #-off]` is stable
+// everywhere — and `mov sp, fp` in the epilogue restores `sp` without having to
+// know how much was pushed.
 
 // macOS mangles C symbol names by prefixing an underscore: `main` -> `_main`.
 // (Linux/ELF would use the bare name; this is the one platform detail here.)
@@ -32,12 +46,65 @@ function freshLabel(prefix: string): string {
 export function generate(program: Program): string {
   labelCounter = 0;
   const lines: string[] = [];
+
   emitFunction(program.function, lines);
   // Assemblers like a trailing newline.
   return lines.join("\n") + "\n";
 }
 
+// Where each local lives, and how much stack the function needs.
+//
+// `offsets` maps a variable's RESOLVED (unique) name to its byte offset from
+// `fp` — always negative, since locals sit below the frame record. Keying on the
+// resolved name is what makes ch7's shadowing work for free: two `a`s in nested
+// scopes arrive as distinct names and so get distinct slots.
+interface FrameLayout {
+  offsets: Map<string, number>;
+  frameSize: number;
+}
+
+// A miss here means layoutFrame and the resolver disagree — a compiler bug, not
+// bad input, so it throws rather than producing `[fp, #undefined]` for the
+// assembler to choke on.
+function slotOf(offsets: Map<string, number>, name: string): number {
+  const offset = offsets.get(name);
+  if (offset === undefined) {
+    throw new Error(`No stack slot for '${name}' — layoutFrame missed it`);
+  }
+  return offset;
+}
+
+function layoutFrame(fn: FunctionDef): FrameLayout {
+  const offsets = new Map<string, number>();
+  let offset = 0;
+
+  for (const item of fn.body) {
+    switch (item.kind) {
+      case "Declaration": {
+        offsets.set(item.name, -4 - offset);
+        offset += 4;
+        break;
+      }
+      case "ExpressionStatement":
+      case "Null":
+      case "Return": {
+        break;
+      }
+      default: {
+        const _never: never = item;
+        throw new Error(`Unhandled blockItem: ${JSON.stringify(_never)}`);
+      }
+    }
+  }
+
+  const frameSize = Math.ceil(offset / 16) * 16;
+
+  return { offsets, frameSize };
+}
+
 function emitFunction(fn: FunctionDef, lines: string[]): void {
+  const { offsets, frameSize } = layoutFrame(fn);
+
   const label = symbol(fn.name);
   // `.globl` DECLARES the symbol as globally visible; the `label:` line DEFINES
   // it (binds the name to this address). Both are required: without the label
@@ -48,23 +115,94 @@ function emitFunction(fn: FunctionDef, lines: string[]): void {
   lines.push(`\t.globl\t${label}`);
   lines.push(`\t.p2align\t2`); // 2^2 = 4-byte alignment (one instruction wide)
   lines.push(`${label}:`);
-  emitStatement(fn.body, lines);
+
+  emitPrologue(frameSize, lines);
+
+  for (const item of fn.body) {
+    if (item.kind === "Declaration") emitDeclaration(item, offsets, lines);
+    else emitStatement(item, offsets, lines);
+  }
+
+  // Falling off the end of `main` returns 0 (C guarantees this for main
+  // specifically). Emitted unconditionally: deciding whether a function ALWAYS
+  // returns is a reachability analysis, not a look at the last block item —
+  // `if (x) return 1; else return 2;` never ends in a Return node but always
+  // returns. When the function did return, this path is unreachable, which
+  // costs four dead instructions and nothing at runtime.
+  lines.push(`\tmovz\tw0, #0`);
+  emitEpilogue(lines);
 }
 
-function emitStatement(stmt: Statement, lines: string[]): void {
+// Claim the frame and anchor `fp` to it.
+//
+// `stp` pushes the caller's fp and lr as one 16-byte unit — the ABI's "frame
+// record", fp at the lower address so the saved fps form a linked list that
+// debuggers walk for backtraces. `lr` isn't strictly at risk yet (we emit no
+// `bl` until M4, so nothing overwrites it), but the pair costs the same single
+// instruction as saving fp alone, and keeps `sp` 16-byte aligned.
+function emitPrologue(frameSize: number, lines: string[]): void {
+  lines.push(`\tstp\tfp, lr, [sp, #-16]!`);
+  lines.push(`\tmov\tfp, sp`);
+  if (frameSize > 0) lines.push(`\tsub\tsp, sp, #${frameSize}`);
+}
+
+// Tear it down, in exact mirror image, and return.
+//
+// `mov sp, fp` rather than `add sp, sp, #frameSize`: restoring from the anchor
+// doesn't depend on the two sizes matching, and it repairs `sp` regardless of
+// what the expression stack machine pushed. `ret` must come last — it branches
+// to `lr`, so anything after it is unreachable.
+function emitEpilogue(lines: string[]): void {
+  lines.push(`\tmov\tsp, fp`);
+  lines.push(`\tldp\tfp, lr, [sp], #16`);
+  lines.push(`\tret`);
+}
+
+// A declaration's only runtime effect is its initializer's store — the slot
+// itself was reserved by the prologue's single `sub sp`. So `int a;` emits
+// nothing at all, and the slot holds whatever the previous frame left there,
+// which is exactly C's "indeterminate value".
+function emitDeclaration(
+  decl: Declaration,
+  offsets: Map<string, number>,
+  lines: string[],
+): void {
+  if (decl.init === undefined) return;
+
+  emitExpressionIntoW0(decl.init, offsets, lines);
+  lines.push(`\tstr\tw0, [fp, #${slotOf(offsets, decl.name)}]`);
+}
+
+function emitStatement(
+  stmt: Statement,
+  offsets: Map<string, number>,
+  lines: string[],
+): void {
   switch (stmt.kind) {
+    case "ExpressionStatement": {
+      emitExpressionIntoW0(stmt.exp, offsets, lines);
+      return;
+    }
+    case "Null": {
+      return;
+    }
     case "Return": {
       // A `return <exp>;` evaluates the expression into w0 (where AAPCS64 says
       // an int return value lives), then `ret` branches back to the caller via
       // the link register.
-      emitExpressionIntoW0(stmt.exp, lines);
-      lines.push(`\tret`);
+      emitExpressionIntoW0(stmt.exp, offsets, lines);
+      // `return` is no longer a single instruction: the frame has to be torn
+      // down before we branch back. The epilogue is inlined at each return
+      // site; with more returns (ch6/ch8) or a longer epilogue (M4's
+      // callee-saved restores) it's worth switching to one labelled epilogue
+      // that each `return` branches to, which is what clang does at -O0.
+      emitEpilogue(lines);
       return;
     }
     default: {
       // Exhaustiveness guard: if a new Statement variant is added and not
       // handled, TS flags this line at compile time.
-      const _never: never = stmt.kind;
+      const _never: never = stmt;
       throw new Error(`Unhandled statement: ${_never}`);
     }
   }
@@ -73,20 +211,38 @@ function emitStatement(stmt: Statement, lines: string[]): void {
 // Evaluate an expression, leaving its value in w0 (the 32-bit view of x0).
 // A Unary op recurses to compute its operand into w0, then transforms w0 in
 // place — so arbitrarily nested unaries (e.g. -~2) need no extra registers.
-function emitExpressionIntoW0(exp: Expression, lines: string[]): void {
+function emitExpressionIntoW0(
+  exp: Expression,
+  offsets: Map<string, number>,
+  lines: string[],
+): void {
   switch (exp.kind) {
     case "Constant": {
-      // NOTE: `mov` is an alias that only encodes immediates fitting a single
-      // movz/movk chunk (a 16-bit value at a 16-bit-aligned shift). e.g.
-      // #65536 assembles, but #70000 does NOT — it needs two chunks, and the
-      // assembler will not synthesize them for us. Fine while the test constants
-      // stay small; revisit with movz/movk or `ldr w0, =N` when they get large.
-      lines.push(`\tmov\tw0, #${exp.value}`);
+      // Every ARM64 instruction is 32 bits wide, so none can carry a full
+      // 32-bit constant — they're built from 16-bit chunks instead. `movz`
+      // writes one chunk and ZEROES the rest; `movk` writes one chunk and KEEPS
+      // the rest. An `int` needs at most two.
+      //
+      // We emit `movz` rather than `mov` deliberately. `mov Wd, #imm` is an
+      // alias the assembler satisfies with movz OR movn OR an `orr` bitmask
+      // immediate, and if none fits it errors rather than expanding to two
+      // instructions — so which constants work is near-unpredictable (#2147483646
+      // assembles, #1431655762 does not). `movz` is one specific instruction with
+      // one rule: 16 bits, or add a `movk`.
+      //
+      // STILL UNHANDLED: negative constants, which want the inverted `movn`
+      // form. Unreachable today (the lexer only produces digit runs, so `-5` is
+      // unary negation applied to 5), but minilisp's `ROOT_END` is `(void *)-1`
+      // — see minilisp-inventory.md §6.4.
+      const lo = exp.value & 0xffff;
+      const hi = (exp.value >>> 16) & 0xffff;
+      lines.push(`\tmovz\tw0, #${lo}`);
+      if (hi !== 0) lines.push(`\tmovk\tw0, #${hi}, lsl #16`);
       return;
     }
     case "Unary": {
       // Compute the operand into w0, then apply the operator to w0 in place.
-      emitExpressionIntoW0(exp.operand, lines);
+      emitExpressionIntoW0(exp.operand, offsets, lines);
       switch (exp.operator) {
         case "Negate":
           lines.push(`\tneg\tw0, w0`);
@@ -116,9 +272,9 @@ function emitExpressionIntoW0(exp: Expression, lines: string[]): void {
     }
     case "Binary": {
       if (exp.operator === "And")
-        return emitShortCircuit(exp.left, exp.right, "beq", 0, lines);
+        return emitShortCircuit(exp.left, exp.right, "beq", 0, offsets, lines);
       if (exp.operator === "Or")
-        return emitShortCircuit(exp.left, exp.right, "bne", 1, lines);
+        return emitShortCircuit(exp.left, exp.right, "bne", 1, offsets, lines);
 
       // Binary operators are the first values that can't funnel through w0
       // alone: computing the right operand would clobber the left. So we park
@@ -127,9 +283,9 @@ function emitExpressionIntoW0(exp: Expression, lines: string[]): void {
       // sit as (left = w0, right = w1) — which lets the order-sensitive combines
       // (`sub`, `sdiv`, and every `cmp`-based comparison) read in natural
       // left-to-right order.
-      emitExpressionIntoW0(exp.right, lines);
+      emitExpressionIntoW0(exp.right, offsets, lines);
       pushRegValOntoStack("x0", lines);
-      emitExpressionIntoW0(exp.left, lines);
+      emitExpressionIntoW0(exp.left, offsets, lines);
       popValFromStackIntoReg("x1", lines);
 
       switch (exp.operator) {
@@ -190,6 +346,26 @@ function emitExpressionIntoW0(exp: Expression, lines: string[]): void {
       }
       return;
     }
+    case "Var": {
+      lines.push(`\tldr\tw0, [fp, #${slotOf(offsets, exp.name)}]`);
+      return;
+    }
+    case "Assign": {
+      // The resolver guarantees the lvalue is a Var (it rejects `2 = 3` and
+      // `a + 3 = 4`), so this check should be unreachable — but it narrows the
+      // type without a cast and documents the invariant.
+      if (exp.lvalue.kind !== "Var") {
+        throw new Error(
+          `Assign lvalue is ${exp.lvalue.kind}; the resolver should have rejected it`,
+        );
+      }
+      const offset = slotOf(offsets, exp.lvalue.name);
+      // Evaluate into w0, store, and LEAVE it in w0 — assignment is an
+      // expression, so `b = (a = 5)` needs the value to flow outward.
+      emitExpressionIntoW0(exp.rvalue, offsets, lines);
+      lines.push(`\tstr\tw0, [fp, #${offset}]`);
+      return;
+    }
     default: {
       // Exhaustiveness guard: assign the narrowed value (never) itself, not a
       // property of it — `exp.kind` on a `never` value is a type error.
@@ -216,15 +392,16 @@ function emitShortCircuit(
   right: Expression,
   branch: "beq" | "bne",
   shortVal: 0 | 1,
+  offsets: Map<string, number>,
   lines: string[],
 ): void {
   const scLabel = freshLabel("sc");
   const endLabel = freshLabel("end");
 
-  emitExpressionIntoW0(left, lines);
+  emitExpressionIntoW0(left, offsets, lines);
   lines.push(`\tcmp\tw0, #0`);
   lines.push(`\t${branch}\t${scLabel}`);
-  emitExpressionIntoW0(right, lines);
+  emitExpressionIntoW0(right, offsets, lines);
   lines.push(`\tcmp\tw0, #0`);
   lines.push(`\t${branch}\t${scLabel}`);
   lines.push(`\tmov\tw0, #${1 - shortVal}`);
