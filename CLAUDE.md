@@ -26,7 +26,13 @@ what stops "useful subset of C" from expanding forever.
 
 Worth keeping in mind for the simplifications they buy, all confirmed absent from
 minilisp: no floating point, no `long long` beyond pointer width, no `goto`,
-`do/while`, bitfields, VLAs, or token-paste/stringize.
+`do/while`, bitfields, VLAs, or token-paste/stringize. **Grep-verified against the
+real source on 2026-08-08**, along with two larger savings: **no struct is ever
+passed or returned by value** (deleting the hardest part of AAPCS64) and
+**`va_arg` is never called** (so varargs needs the ABI but no argument
+extraction). The audit also found `continue` *is* used — the inventory had said
+otherwise — plus a silent-failure hazard in Apple's varargs ABI:
+`docs/minilisp-inventory.md` §6.
 
 ## Key decisions (with the cost we accepted)
 
@@ -117,12 +123,17 @@ associativity, and `== != < > <= >=` / `&& ||`. The driver preprocesses with
 call with `-nostdinc -I <ourheaders>`). Who wrote what:
 `docs/authorship-log.md`.
 
-**Next → chapter 5: local variables**, the start of **M3 (variables, scope,
-statements)**. Declarations, assignment, a symbol table + real ARM64 stack frames
-(`sp`-relative slots, frame setup/teardown). Then ch6 `if`/`?:`, ch7 blocks.
-Codegen is USER-writes; Claude specs + reviews; oracle `clang -S -O1`. The
-AAPCS64 "conceptual peak" and the likely AST→IR ("TACKY") split land around
-ch8–9 (M4), not now.
+**In progress → chapter 5: local variables**, the start of **M3 (variables,
+scope, statements)**. Lex, parse, and **validate** all green (147/147 each):
+declarations, assignment, block items, a Pratt table that now carries
+associativity and node kind as well as binding power, and `resolve.ts` — a new
+third pipeline stage (`--validate`) that rejects undeclared variables, duplicate
+declarations and invalid lvalues, and renames each variable uniquely for ch7's
+shadowing. **Remaining: codegen** — real ARM64 stack frames, `sp`-relative
+slots, prologue/teardown, plus arms for `Var`/`Assign`/`ExprStmt`/`Null` and
+`BlockItem[]` bodies. Then ch6 `if`/`?:`, ch7 blocks. Codegen is USER-writes;
+Claude specs + reviews; oracle `clang -S -O1`. The AAPCS64 "conceptual peak" and
+the likely AST→IR ("TACKY") split land around ch8–9 (M4), not now.
 
 ### Lessons banked
 
@@ -134,12 +145,31 @@ ch8–9 (M4), not now.
 - **Truthiness is *nonzero*, not `== 1`.** Short-circuit `||` must test `#0`/`bne`,
   not `#1`/`beq`. `emitShortCircuit` derives the fall-through value as
   `1 - shortVal` so `&&` and `||` can't drift apart.
+- **`minBP` is a *floor*, and associativity is which floor you recurse at.**
+  Left-assoc recurses at `bp + 1` (an equal-precedence operator to the right is
+  refused by the inner call, folded by the outer → `(1-2)-3`); right-assoc
+  recurses at `bp` (the inner call accepts and folds it → `a = (b = 5)`). Same
+  numbers, one `+ 1`, opposite lean. Fresh-expression contexts (`return exp ;`,
+  `( exp )`, `= exp ;`) pass 0 because a terminator ends them, not an operator.
+- **Assignment is not a binary operator, even though it parses like one.** Every
+  `BinaryOp` evaluates both operands to values; assignment needs its left operand
+  as a *location*. Hence a separate `Assign` node sharing the Pratt table but not
+  the `BinaryOp` union — putting `"Assign"` in that union makes codegen's `never`
+  guard demand an unreachable arm. Corollary: `=` sits at bp 1, not 0, so the
+  comma operator can later go below it.
+- **The parser knows shape; meaning needs its own stage.** `2 = 3` and `return a;`
+  with no `a` are both well-formed and both meaningless — a context-free grammar
+  can't reject either. That's what `resolve.ts` is for, and it *transforms* (name
+  resolution) rather than just checking, which is why it returns an AST.
 
 ## Deferred bugs
 
 - `mov w0, #N` only encodes immediates fitting one movz/movk chunk (≤16 bits,
   16-bit-aligned shift); e.g. `#70000` won't assemble. Fix with movz/movk pairs
-  or `ldr w0, =N` when constants get large (M5-ish).
+  or `ldr w0, =N` when constants get large (M5-ish). The fix must also cover the
+  **inverted (`movn`)** case: minilisp's `ROOT_END` is `((void *)-1)`. Its only
+  literal above 65535 is `MEMORY_SIZE 65536`, which happens to encode as
+  `movz #1, lsl #16` — so plain constants won't bite, but `-1` will.
 
 ## Resources
 
