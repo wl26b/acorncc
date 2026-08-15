@@ -15,7 +15,7 @@ acorncc and passes its own test suite (M7).
 |---|-----------|--------|
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
-| M3 | Variables, scope, statements | 🔶 in progress (ch5 green; ch6–7 to go) |
+| M3 | Variables, scope, statements | 🔶 in progress (ch5–6 green; ch7 to go) |
 | M4 | Control flow + functions (AAPCS64) | ⬜ — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
@@ -90,6 +90,41 @@ stack frames. Sandler ch5–7.
   - Oracle note: use `clang -S -O0` for frame layout — at `-O1` locals live in
     registers and there's no frame to compare against. `-O1` stays better for
     instruction selection.
+
+**ch6 — `if` / `else` / `?:` — green end to end (183/183).** The first real
+control flow. Two nodes, `If` (statement) and `Conditional` (expression),
+sharing Scheme's field names (predicate / consequent / alternative) because
+they're the same idea at two levels of the grammar; the differences are that
+`If`'s alternative is optional and `Conditional`'s arms must produce a value.
+What the chapter actually taught:
+- **`?:` needs a binding power, not just a production.** It goes in the Pratt
+  table like any infix operator, because the table answers the one question
+  every infix token asks — *does this bind tightly enough for THIS call to fold
+  it?* Fold `?` on sight and `2 * 0 ? 5 : 6` becomes `2 * (0 ? 5 : 6)`, since
+  the call parsing `*`'s right operand holds only `0`. "We've finished the
+  predicate" is true only in the call whose floor `?` clears.
+- **Its two operands take different floors, and that asymmetry is positional.**
+  The consequent sits *inside* the `? … :` bracket → floor 0, exactly like
+  `( exp )`. The alternative is open on the right → floor `bp`, so it has to
+  negotiate with what follows. A floor above 0 inside a bracket can only
+  destroy input: a refused operator there has no enclosing call to fall back
+  to. This is what makes `a ? b = 1 : c` legal while `a ? b : c = 1` parses as
+  `(a ? b : c) = 1` — C's grammar exactly, and the route by which
+  `ternary_assign` reaches the resolver as an invalid lvalue.
+- **`:` deliberately has no binding power.** It's a delimiter consumed by
+  `expect`, and its *absence* from the table is what terminates the middle
+  operand — same mechanism as `)`.
+- **Codegen needs no stack.** Unlike `Binary`, which parks its left operand
+  because both must exist simultaneously, the predicate is consumed by `cmp`
+  before either arm runs and exactly one arm executes. Nothing is live across
+  anything, so `w0` suffices at any nesting depth.
+- **A label's definition and every branch to it must move together.** Making
+  the alternative label conditional while leaving `beq` pointing at it gives
+  *assembler local symbol not defined*. Deciding the false target up front —
+  `alternative ? freshLabel(...) : endLabel` — makes that unrepresentable, and
+  drops the dead `b` that a bare `if` otherwise emits to the next instruction.
+- Still on the table: `cbz`/`cbnz` instead of `cmp #0` + `beq`, which would
+  also simplify `emitShortCircuit`. Deferred as an instruction-selection pass.
 
 ### M4 — Control flow + functions ⬜ (conceptual peak)
 Loops (`for`/`while`), `switch`/`case`, then function definitions/calls →

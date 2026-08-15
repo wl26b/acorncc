@@ -48,12 +48,24 @@ class TokenStream {
 // between these tiers in later chapters (shifts, `?:`, `,`, ...). Assignment
 // sits at 1 rather than 0 so the comma operator can later go below it.
 //
-// Left-associativity is the silent default; only `=` opts out. The two axes
-// happen to coincide today (the one right-associative operator is also the one
-// non-Binary node), but they come apart in ch6: `?:` is right-associative AND
-// builds a third node kind.
+// Left-associativity is the silent default; `=` and `?:` opt out.
+//
+// `?` earns a row here even though folding it is nothing like folding a binary
+// operator, because the table answers the ONE question that is the same for
+// every infix token: does this bind tightly enough for the current call to fold
+// it, or does it belong to an enclosing one? Without a bp, `2 * 0 ? 5 : 6`
+// would fold the conditional in the call parsing `*`'s right operand — where
+// `left` is only `0` — and produce `2 * (0 ? 5 : 6)` instead of `(2 * 0) ? 5 :
+// 6`. "We've finished the predicate" is true only in the call whose floor `?`
+// clears; the bp is what locates that call.
+//
+// `:` deliberately gets NO row: it's a delimiter, consumed by `expect`, never
+// folded. That absence is load-bearing — the middle operand terminates
+// precisely because the loop looks `:` up, finds nothing, and returns.
 type OpEntry = { bp: number; rightAssoc?: boolean } & (
-  { node: "Binary"; op: BinaryOp } | { node: "Assign" }
+  | { node: "Binary"; op: BinaryOp }
+  | { node: "Assign" }
+  | { node: "Conditional" }
 );
 
 const INFIX_OPS: Partial<Record<TokenKind, OpEntry>> = {
@@ -70,6 +82,7 @@ const INFIX_OPS: Partial<Record<TokenKind, OpEntry>> = {
   "!=": { bp: 30, node: "Binary", op: "NotEqual" },
   "&&": { bp: 10, node: "Binary", op: "And" },
   "||": { bp: 5, node: "Binary", op: "Or" },
+  "?": { bp: 3, node: "Conditional", rightAssoc: true },
   "=": { bp: 1, node: "Assign", rightAssoc: true },
 };
 
@@ -129,7 +142,10 @@ function parseDeclaration(ts: TokenStream): Declaration {
   return decl;
 }
 
-// <statement> ::= "return" <exp> ";" | <exp> ";" | ";"
+// <statement> ::= "return" <exp> ";"
+//               | "if" "(" <exp> ")" <statement> [ "else" <statement> ]
+//               | <exp> ";"
+//               | ";"
 //
 // The bare `;` must be checked BEFORE falling through to the expression case,
 // or it reaches parseAtom, which has no way to start an expression from it.
@@ -144,6 +160,29 @@ function parseStatement(ts: TokenStream): Statement {
     case ";": {
       ts.advance();
       return { kind: "Null" };
+    }
+    case "if": {
+      ts.advance();
+      ts.expect("(");
+      // Floor 0: the predicate is closed on the right by `)`, so no operator
+      // can compete for it — same as any parenthesized expression.
+      const predicate = parseExpression(ts, 0);
+      ts.expect(")");
+      // parseStatement, NOT parseBlockItem: the arms are statements, so
+      // `if (p) int x = 1;` is rejected here with no check of its own.
+      const consequent = parseStatement(ts);
+
+      // Grab an `else` greedily. That single line is the whole answer to the
+      // dangling-else problem — in `if (a) if (b) x; else y;` the INNER
+      // parseStatement call is the one still running when `else` is peeked, so
+      // it claims it, binding the else to the nearest if. Which is C's rule.
+      if (ts.peek().kind === "else") {
+        ts.advance();
+        const alternative = parseStatement(ts);
+        return { kind: "If", predicate, consequent, alternative };
+      }
+
+      return { kind: "If", predicate, consequent };
     }
     default: {
       const expr = parseExpression(ts, 0);
@@ -202,7 +241,7 @@ function parseAtom(ts: TokenStream): Expression {
   }
 }
 
-// <exp> ::= <atom> { <infix-op> <exp> }
+// <exp> ::= <atom> { <infix-op> <exp> | "?" <exp> ":" <exp> }
 //
 // The Pratt loop. `minBP` is a FLOOR: the loosest operator this call is willing
 // to fold. Callers starting a fresh expression — `return exp ;`, `( exp )`,
@@ -221,21 +260,50 @@ function parseAtom(ts: TokenStream): Expression {
 //     inner call and folded by this one -> `(1 - 2) - 3`. RIGHT-associative:
 //     recurse at `bp`, so the inner call accepts it and folds it itself ->
 //     `a = (b = 5)`. Same numbers, one `+ 1`, opposite lean.
+//
+// The `+ 1` is only ever consulted at EQUAL precedence — with `bp < minBP` as
+// the test, `bp + 1` is how you demand "strictly tighter" instead of "at least
+// as tight". For operators that differ in precedence the increment changes
+// nothing, which is exactly right: associativity is the one bit of information
+// precedence doesn't carry.
 function parseExpression(ts: TokenStream, minBP: number): Expression {
   let left = parseAtom(ts);
 
   while (true) {
     const entry = INFIX_OPS[ts.peek().kind];
     if (entry === undefined || entry.bp < minBP) return left;
-
     ts.advance();
-    const nextMinBP = entry.rightAssoc ? entry.bp : entry.bp + 1;
-    const right = parseExpression(ts, nextMinBP);
 
-    if (entry.node === "Assign") {
-      left = { kind: "Assign", lvalue: left, rvalue: right };
+    // `?:` can't ride the generic one-operand path below: it has a different
+    // arity AND its two operands take different floors.
+    //
+    //   consequent  -> 0, because it sits INSIDE the `? ... :` bracket. Nothing
+    //     outside can claim part of it, and `:` (not being an operator) is what
+    //     stops it. A floor above 0 here could only ever destroy input: a
+    //     refused operator between `?` and `:` has no enclosing call to fall
+    //     back to, since the enclosing call is parked at this fold. Hence
+    //     `a ? b = 1 : c` is legal C.
+    //   alternative -> `entry.bp`, because it's open on the right and must
+    //     negotiate with whatever follows. Right-associative, so an equal `?`
+    //     is folded by the inner call: `a ? b : (c ? d : e)`. And `=` (bp 1)
+    //     fails the floor, making `a ? b : c = 1` parse as `(a ? b : c) = 1` —
+    //     which is C's grammar (the third operand is a conditional-expression,
+    //     not an assignment-expression) and what sends it to the resolver as an
+    //     invalid lvalue rather than being accepted here.
+    if (entry.node === "Conditional") {
+      const consequent = parseExpression(ts, 0);
+      ts.expect(":");
+      const alternative = parseExpression(ts, entry.bp);
+      left = { kind: "Conditional", predicate: left, consequent, alternative };
     } else {
-      left = { kind: "Binary", operator: entry.op, left, right };
+      const nextMinBP = entry.rightAssoc ? entry.bp : entry.bp + 1;
+      const right = parseExpression(ts, nextMinBP);
+
+      if (entry.node === "Assign") {
+        left = { kind: "Assign", lvalue: left, rvalue: right };
+      } else {
+        left = { kind: "Binary", operator: entry.op, left, right };
+      }
     }
   }
 }

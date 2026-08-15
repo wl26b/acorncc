@@ -7,6 +7,8 @@ export type TokenKind =
   | "int"
   | "void"
   | "return"
+  | "if"
+  | "else"
   // punctuation
   | "("
   | ")"
@@ -31,6 +33,8 @@ export type TokenKind =
   | "<=" // less than or equal
   | ">=" // greater than or equal
   | "=" // assignment (binary, right-associative)
+  | "?" // conditional operator, first half of `? :`
+  | ":" // conditional operator, second half
   // multi-char / value-bearing
   | "identifier"
   | "constant"
@@ -55,6 +59,8 @@ const KEYWORDS = new Map<string, TokenKind>([
   ["int", "int"],
   ["void", "void"],
   ["return", "return"],
+  ["if", "if"],
+  ["else", "else"],
 ]);
 
 // Each regex is anchored with \G-like behaviour by matching from `pos` using
@@ -92,6 +98,9 @@ const OPERATORS: TokenKind[] = [
   "{",
   "}",
   ";",
+  // No maximal-munch hazard: nothing else starts with `?`, and C has no `::`.
+  "?",
+  ":",
 ];
 
 export function lex(source: string): Token[] {

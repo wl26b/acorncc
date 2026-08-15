@@ -85,8 +85,16 @@ function layoutFrame(fn: FunctionDef): FrameLayout {
         offset += 4;
         break;
       }
+      // No statement can introduce a local, so none of these contribute a
+      // slot. `If` is on this list for a reason worth stating: its arms are
+      // STATEMENTS, and a declaration isn't a statement in C, so `if (x) int
+      // y;` doesn't parse and an `If` can never hide a slot from this walk.
+      // Chapter 7 breaks that — a block IS a statement, and it can declare —
+      // at which point this flat loop over `fn.body` has to become a
+      // recursive walk.
       case "ExpressionStatement":
       case "Null":
+      case "If":
       case "Return": {
         break;
       }
@@ -199,6 +207,36 @@ function emitStatement(
       emitEpilogue(lines);
       return;
     }
+    case "If": {
+      // Where the false path lands. With an `else` that's the alternative's
+      // own label; without one it IS the join point, since "skip the
+      // consequent" and "we're done" are the same address. Deciding it up
+      // front is what keeps every branch target defined: the name always
+      // refers to a label this function goes on to emit.
+      const endLabel = freshLabel("end");
+      const falseLabel = stmt.alternative
+        ? freshLabel("alternative")
+        : endLabel;
+
+      // Truthiness is NONZERO (the ch4 lesson), so the false path is the
+      // equal-to-zero one.
+      emitExpressionIntoW0(stmt.predicate, offsets, lines);
+      lines.push(`\tcmp\tw0, #0`);
+      lines.push(`\tbeq\t${falseLabel}`);
+      emitStatement(stmt.consequent, offsets, lines);
+
+      // Both of these exist SOLELY to jump over the alternative and to name
+      // where it starts — so with no alternative, neither is emitted. That's
+      // what stops a bare `if` from ending in a branch to the very next
+      // instruction.
+      if (stmt.alternative !== undefined) {
+        lines.push(`\tb\t${endLabel}`);
+        lines.push(`${falseLabel}:`);
+        emitStatement(stmt.alternative, offsets, lines);
+      }
+      lines.push(`${endLabel}:`);
+      return;
+    }
     default: {
       // Exhaustiveness guard: if a new Statement variant is added and not
       // handled, TS flags this line at compile time.
@@ -268,6 +306,31 @@ function emitExpressionIntoW0(
           );
         }
       }
+      return;
+    }
+    case "Conditional": {
+      // The same branch skeleton as the `If` statement, with two differences:
+      // the alternative is MANDATORY (an expression must produce a value on
+      // every path, so there's no one-label shortcut), and each arm leaves its
+      // value in w0 — the two arms converge on the register, which is what
+      // makes the whole thing an expression.
+      //
+      // Note what ISN'T here: no push/pop. Binary parks its left operand
+      // because both operands must exist SIMULTANEOUSLY to be combined, but
+      // here the predicate is consumed by `cmp` before either arm runs, and
+      // exactly one arm ever executes. Nothing is live across anything else,
+      // so w0 alone suffices no matter how deeply conditionals nest.
+      const altLabel = freshLabel("alternative");
+      const endLabel = freshLabel("end");
+
+      emitExpressionIntoW0(exp.predicate, offsets, lines);
+      lines.push(`\tcmp\tw0, #0`);
+      lines.push(`\tbeq\t${altLabel}`);
+      emitExpressionIntoW0(exp.consequent, offsets, lines);
+      lines.push(`\tb\t${endLabel}`);
+      lines.push(`${altLabel}:`);
+      emitExpressionIntoW0(exp.alternative, offsets, lines);
+      lines.push(`${endLabel}:`);
       return;
     }
     case "Binary": {

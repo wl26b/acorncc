@@ -56,34 +56,46 @@ carries its own.
 | M3 / ch5 | `81f6ffe` | Driver: `--validate` stage | Claude | boilerplate |
 | M3 / ch5 | `81f6ffe` | `resolve.ts` — the new semantic-analysis stage | **User → Claude-reviewed** | Claude scaffolded the file (structure + `TODO(you)` holes + contracts); user wrote all the logic; Claude caught the `exp.left`/`exp.right` typo that silently skipped right subtrees, then did error messages and comment cleanup |
 | M3 / ch5 | `47d0ce1` | Codegen: `layoutFrame`, fp-anchored slots, prologue/epilogue, `Var`/`Assign`/`Declaration` arms, `movz`/`movk` constants | **User → Claude-reviewed** | specced the ARM64 (frame layout, 16-byte alignment, `stp`/`ldp`, `fp` vs `sp` anchoring) and predicted the `sp`-moves-mid-expression trap before it was written; caught the `#--4` double-negation, `ret` firing before the epilogue, and the missing implicit `return 0`; extracted `slotOf`/`emitPrologue`/`emitEpilogue` and reworked comments |
+| M3 / ch6 | *this commit* | Lexer: `if`/`else` keywords, `?`/`:` tokens | Claude | boilerplate |
+| M3 / ch6 | *this commit* | AST: `If` statement + `Conditional` expression | **User** | reviewed shape; user chose Scheme's predicate/consequent/alternative naming after weighing ESTree/clang/Sandler conventions; Claude argued `If` over `IfElse` (the else is optional) and `Conditional` over `Ternary` (arity names in this file mean operator *families*, which `?:` isn't), and flagged that `else`/`then` as TS field names bring a destructuring restriction and the thenable trap |
+| M3 / ch6 | *this commit* | Parser: `if`/`else` statement with greedy dangling-else | **User** | reviewed — correct first time |
+| M3 / ch6 | *this commit* | Parser: `?:` in the Pratt loop (table row + its own fold path) | **User** | specced why `?` needs a binding power at all (else `2 * 0 ? 5 : 6` mis-parses) and why `:` must NOT have one; caught the generic `right` running before the Conditional branch (double-parsing the middle), then the alternative at floor 0 instead of `bp`, then a duplicated `expect(":")`; user derived the floor asymmetry from the C grammar's conditional-expression rule |
+| M3 / ch6 | *this commit* | `resolve.ts`: `If` + `Conditional` arms | **User** | reviewed — correct first time; noted only a truthiness-vs-`!== undefined` consistency nit |
+| M3 / ch6 | *this commit* | Codegen: `If` and `Conditional` branch emission, label/join layout | **User → Claude-reviewed** | specced the skeleton and posed the two design questions (why no operand stack; what the no-`else` shape collapses to); caught the dead `b` to the next instruction, then the half-applied fix that left `beq` pointing at an undefined label; suggested deciding the false target up front; supplied the `clang -S -O1` oracle showing `cbz` (deferred) |
 
 ## Running tally of user-authored work
 
 - **Front end:** unary + binary expression parsing, the entire Pratt loop (incl.
-  ch4's relational/equality/logical precedence tiers and ch5's generalisation to
-  carry associativity and node kind), all AST node designs (`Unary`, `Binary`
-  and their operator tags; `Declaration`, `Var`, `Assign`,
-  `ExpressionStatement`, `Null`, `BlockItem`), and the declaration/statement
-  parsing.
+  ch4's relational/equality/logical precedence tiers, ch5's generalisation to
+  carry associativity and node kind, and ch6's `?:` — the first operator with
+  its own fold path and per-operand floors), all AST node designs (`Unary`,
+  `Binary` and their operator tags; `Declaration`, `Var`, `Assign`,
+  `ExpressionStatement`, `Null`, `BlockItem`; `If`, `Conditional`), and the
+  declaration/statement parsing including `if`/`else`.
 - **Middle end:** all of `resolve.ts`'s logic — scope map, undeclared-variable
-  and duplicate-declaration checks, lvalue validation, and the unique-renaming
-  that makes ch7's shadowing tractable. (Claude scaffolded the file's structure;
-  the user filled every hole.)
+  and duplicate-declaration checks, lvalue validation, the unique-renaming that
+  makes ch7's shadowing tractable, and the ch6 `If`/`Conditional` recursion.
+  (Claude scaffolded the file's structure; the user filled every hole.)
 - **Back end:** all codegen written so far — constant returns, unary ops (incl.
   `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), the
-  short-circuit `&&`/`||` branch logic, and ch5's **stack frames**: slot layout,
-  16-byte alignment, fp-anchored addressing, prologue/epilogue, and chunked
-  constants via `movz`/`movk`.
-- **Not yet touched by user (still ahead):** control flow (`if`/`?:`, loops,
-  `switch`), functions/AAPCS64, types, aggregates.
+  short-circuit `&&`/`||` branch logic, ch5's **stack frames** (slot layout,
+  16-byte alignment, fp-anchored addressing, prologue/epilogue, chunked
+  constants via `movz`/`movk`), and ch6's **branch emission** for `if`/`else`
+  and `?:`.
+- **Not yet touched by user (still ahead):** blocks/nested scope, loops,
+  `switch`, functions/AAPCS64, types, aggregates.
 
 ## Next up (so the log stays honest about what's user work vs. not)
 
-- **ch6 — `if` / `?:`** (continues M3): the `If` statement and `Conditional`
-  expression. `?:` goes in the Pratt table for its binding power but needs its
-  own branch in the loop — it must consume a middle expression and expect `:`,
-  so it can't share the generic two-operand fold. Codegen reuses the label and
-  branch machinery from `&&`/`||`; the new part is that `?:` must produce a
-  *value*, so both arms converge on the same register. USER-writes codegen;
-  Claude specs/reviews. Oracle: `clang -S -O0` for anything about frames,
-  `-O1` for instruction selection.
+- **ch7 — compound statements** (finishes M3): a `Block` (or `Compound`)
+  statement holding `BlockItem[]`, which makes a block a statement that CAN
+  declare — the thing ch6's arms could not. Two places get their first real
+  workout: `resolve.ts` needs nested scopes, splitting the two questions its
+  single map answers today ("declared *here*?" for the duplicate check vs.
+  "declared *anywhere enclosing*?" for the undeclared check); and
+  `layoutFrame`'s flat loop over `fn.body` must become a recursive walk, at
+  which point the unique-renaming from ch5 pays off — shadowed variables arrive
+  as distinct names and get distinct slots for free. USER-writes the scope
+  handling and codegen; Claude specs/reviews.
+- **Deferred from ch6:** `cbz`/`cbnz` in place of `cmp #0` + `beq`/`bne`, which
+  would cover `emitShortCircuit` too. Instruction selection, not correctness.

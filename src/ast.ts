@@ -8,12 +8,14 @@
 //   declaration = Declaration(identifier name, exp? init)
 //   statement   = Return(exp)
 //               | ExpressionStatement(exp)
+//               | If(exp predicate, statement consequent, statement? alternative)
 //               | Null
 //   exp         = Constant(int)
 //               | Var(identifier)
 //               | Unary(unary_op, exp)
 //               | Binary(binary_op, exp, exp)
 //               | Assign(exp lvalue, exp rvalue)
+//               | Conditional(exp predicate, exp consequent, exp alternative)
 //   unary_op    = Negate | Complement | Not
 //
 // As the language grows, each of these gets more variants (more statement
@@ -44,7 +46,25 @@ export interface Declaration {
   init?: Expression;
 }
 
-export type Statement = Return | ExpressionStatement | Null;
+export type Statement = Return | ExpressionStatement | Null | If;
+
+// `if (p) c;` / `if (p) c; else a;`. Field names are Scheme's — predicate /
+// consequent / alternative — and `Conditional` below reuses all three, which is
+// the point: the two nodes are the same idea at two levels of the grammar.
+//
+// Both arms are STATEMENTS, not BlockItem[]. That single choice is what makes
+// `if (p) int x = 1;` illegal for free: a declaration isn't a statement in C,
+// so there's no production that would accept one here. It's also why `Null`
+// exists — `if (p) ;` needs something to point at, so the arms are never
+// optional the way `alternative` is.
+export interface If {
+  kind: "If";
+  predicate: Expression;
+  consequent: Statement;
+  // Optional, because a bare `if` is a complete statement. Contrast
+  // `Conditional`, where it's mandatory.
+  alternative?: Statement;
+}
 
 export interface Return {
   kind: "Return";
@@ -66,7 +86,21 @@ export interface Null {
 
 // An expression is a leaf (constant, variable) or an operation applied to other
 // expressions (the recursive operands are what make the AST a tree).
-export type Expression = Constant | Var | Unary | Binary | Assign;
+export type Expression = Constant | Var | Unary | Binary | Assign | Conditional;
+
+// The `? :` operator — C calls it the *conditional operator* (§6.5.15), and the
+// grammar production is `conditional-expression`. Not named `Ternary`: `Unary`
+// and `Binary` are arity names because each is a FAMILY carrying an operator
+// tag, and this is a lone operator with nothing to discriminate.
+//
+// `alternative` is mandatory here, unlike `If`'s, because an expression has to
+// produce a value on every path. Same three field names as `If` on purpose.
+export interface Conditional {
+  kind: "Conditional";
+  predicate: Expression;
+  consequent: Expression;
+  alternative: Expression;
+}
 
 export interface Constant {
   kind: "Constant";

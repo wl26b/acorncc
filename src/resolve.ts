@@ -71,6 +71,7 @@ function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
     }
     case "ExpressionStatement":
     case "Null":
+    case "If":
     case "Return": {
       return resolveStatement(item, scope);
     }
@@ -109,6 +110,20 @@ function resolveStatement(stmt: Statement, scope: Scope): Statement {
     case "Return":
     case "ExpressionStatement": {
       stmt.exp = resolveExpression(stmt.exp, scope);
+      return stmt;
+    }
+    // The first statement that contains other statements, so this is where
+    // resolveStatement starts recursing into itself. Both arms resolve in the
+    // SAME scope — not a fresh one — and that's correct rather than a
+    // shortcut: an arm is a single statement, and a statement can't declare
+    // anything, so there is no name for a nested scope to hold. Chapter 7's
+    // blocks are what change that.
+    case "If": {
+      stmt.predicate = resolveExpression(stmt.predicate, scope);
+      stmt.consequent = resolveStatement(stmt.consequent, scope);
+      if (stmt.alternative !== undefined) {
+        stmt.alternative = resolveStatement(stmt.alternative, scope);
+      }
       return stmt;
     }
     case "Null": {
@@ -159,6 +174,16 @@ function resolveExpression(exp: Expression, scope: Scope): Expression {
     case "Binary": {
       exp.left = resolveExpression(exp.left, scope);
       exp.right = resolveExpression(exp.right, scope);
+      return exp;
+    }
+    // Pure structural recursion — nothing to check. Note that `a ? b : c = 1`
+    // never reaches here as a Conditional in the lvalue position by accident:
+    // the parser's floors make it `Assign(Conditional, 1)`, so the lvalue
+    // check in the Assign case above is what rejects it.
+    case "Conditional": {
+      exp.predicate = resolveExpression(exp.predicate, scope);
+      exp.consequent = resolveExpression(exp.consequent, scope);
+      exp.alternative = resolveExpression(exp.alternative, scope);
       return exp;
     }
     default: {

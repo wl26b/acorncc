@@ -61,7 +61,7 @@ each ending in something that RUNS:
 
 1. **Skeleton** ✅
 2. **Expressions** (unary + binary + logical/relational, Pratt) ✅
-3. **Variables, scope, statements** ⬜ ← next
+3. **Variables, scope, statements** 🔶 in progress (ch5–6 green; ch7 blocks to go)
 4. **Control flow + functions** (loops, `switch`, AAPCS64) — *conceptual peak*
 5. **Types + storage** (int/long/unsigned/char, pointers, enum, static storage)
 6. **Aggregates** (arrays, structs + unions + function pointers + compound literals)
@@ -123,19 +123,31 @@ associativity, and `== != < > <= >=` / `&& ||`. The driver preprocesses with
 call with `-nostdinc -I <ourheaders>`). Who wrote what:
 `docs/authorship-log.md`.
 
-**M3 in progress — chapter 5 green (147/147).** Local variables work end to end.
-The pipeline gained a **third stage**, `resolve.ts` (`--validate`), which rejects
-what parses but doesn't mean anything (undeclared variables, duplicate
+**M3 in progress — chapters 5 and 6 green (183/183).** Local variables work end
+to end. The pipeline gained a **third stage**, `resolve.ts` (`--validate`), which
+rejects what parses but doesn't mean anything (undeclared variables, duplicate
 declarations, invalid lvalues) and renames each variable uniquely so ch7's
 shadowing stays tractable. Codegen gained **real ARM64 stack frames**: slot
 layout, 16-byte alignment, and fp-anchored addressing — locals anchor to `fp`
 rather than `sp` because the expression stack machine moves `sp` mid-expression.
 
-**Next → chapter 6: `if` / `?:`**, then ch7 blocks. Codegen is USER-writes;
-Claude specs + reviews. Oracle: `clang -S -O0` for anything about stack frames
-(at `-O1` locals live in registers and there's no frame to diff against),
-`-O1` for instruction selection. The AAPCS64 "conceptual peak" and the likely
-AST→IR ("TACKY") split land around ch8–9 (M4), not now.
+Chapter 6 added the first control flow: `If` (statement) and `Conditional`
+(expression), sharing the field names predicate / consequent / alternative.
+`?:` lives in the Pratt table for its binding power but folds on its own path —
+different arity, and its two operands take different floors (consequent 0,
+alternative `bp`). Codegen is the `&&`/`||` label machinery again, with the new
+wrinkle that `Conditional` must leave a *value* in `w0` from either arm.
+
+**Next → chapter 7: compound statements (blocks)**, which finishes M3. Two
+things that ch6 got away with stop working there: `resolve.ts`'s single flat
+scope needs real nesting (and the two questions its one map answers today —
+"declared *here*?" vs "declared *anywhere enclosing*?" — come apart), and
+`layoutFrame`'s flat loop over `fn.body` has to become a recursive walk, because
+a block IS a statement and it CAN declare. Codegen is USER-writes; Claude specs
++ reviews. Oracle: `clang -S -O0` for anything about stack frames (at `-O1`
+locals live in registers and there's no frame to diff against), `-O1` for
+instruction selection. The AAPCS64 "conceptual peak" and the likely AST→IR
+("TACKY") split land around ch8–9 (M4), not now.
 
 ### Lessons banked
 
@@ -159,6 +171,31 @@ AST→IR ("TACKY") split land around ch8–9 (M4), not now.
   the `BinaryOp` union — putting `"Assign"` in that union makes codegen's `never`
   guard demand an unreachable arm. Corollary: `=` sits at bp 1, not 0, so the
   comma operator can later go below it.
+- **A floor is a refusal, and refusal needs a recipient.** `bp < minBP → return`
+  only works because an *enclosing* loop is sitting at the same token, ready to
+  fold what this call declined. Inside a bracketed operand there is no such
+  call — the enclosing one is parked mid-fold, past the closing delimiter — so a
+  floor above 0 there doesn't hand the operator up, it drops it. That's why the
+  ternary's consequent parses at 0 (closed by `:`) while its alternative parses
+  at `bp` (open on the right), and why `return exp ;` / `( exp )` / `= exp ;`
+  have always passed 0. Sort every call site by *what closes it*: a terminator
+  or bracket → 0; more expression → a real floor.
+- **A delimiter is not an operator.** `:` gets no row in the Pratt table, and
+  the absence does work: the middle operand terminates precisely because the
+  loop looks `:` up and finds nothing. Give it a binding power and the middle
+  swallows its own closing token. Same reason `)` has no bp.
+- **A label's definition and every branch targeting it must move together.**
+  Making the alternative label conditional while leaving `beq` aimed at it
+  yields *assembler local symbol not defined*. Choosing the false target up
+  front (`alternative ? freshLabel(…) : endLabel`) makes the mismatch
+  unrepresentable rather than merely avoided. Silver lining: an undefined local
+  label is a hard assembler error, so that class of bug can't reach a running
+  binary — a branch to the *wrong* defined label would have.
+- **Branches need no operand stack.** `Binary` parks its left operand because
+  both operands must exist *simultaneously* to combine. In `If`/`Conditional`
+  the predicate is consumed by `cmp` before either arm runs and exactly one arm
+  executes, so nothing is live across anything else — `w0` alone survives
+  arbitrary nesting.
 - **The parser knows shape; meaning needs its own stage.** `2 = 3` and `return a;`
   with no `a` are both well-formed and both meaningless — a context-free grammar
   can't reject either. That's what `resolve.ts` is for, and it *transforms* (name
