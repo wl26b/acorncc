@@ -102,7 +102,13 @@ scaffold/review mode, and Claude should proactively offer it for core work.
   without codegen; `--latest-only` to skip earlier chapters).
 - **Typecheck:** `npm run typecheck` — a *separate* gate from the tests, which run
   via `tsx` and never typecheck.
-- **Assembly oracle:** `clang -S -O1 x.c -o -`.
+- **Assembly oracle:** `tools/oracle.sh` — wraps `clang -S`, strips the noise
+  (`.cfi_*`, sections, inline comments), and takes a file *or* an inline
+  snippet. `--shape` compares opcode sequences with acorncc's, operands and
+  label names dropped; `--diff` is the full text diff. **Predict the assembly
+  first, then run it** — the gap is the learning. `-O0` answers "what goes
+  where" (frame layout, loop structure); `-O1` answers "which instruction"
+  (`cbz`, `cset`, `csel`) but rotates loops, so don't copy its structure.
 - **Format:** `npm run format` (Prettier; `*.md` excluded so it doesn't fight the
   hand-wrapped prose).
 - Test suite lives at `writing-a-c-compiler-tests/` — a gitignored upstream repo,
