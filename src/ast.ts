@@ -9,6 +9,7 @@
 //   statement   = Return(exp)
 //               | ExpressionStatement(exp)
 //               | If(exp predicate, statement consequent, statement? alternative)
+//               | Compound(block_item* block)
 //               | Null
 //   exp         = Constant(int)
 //               | Var(identifier)
@@ -46,7 +47,27 @@ export interface Declaration {
   init?: Expression;
 }
 
-export type Statement = Return | ExpressionStatement | Null | If;
+export type Statement = Return | ExpressionStatement | Null | If | Compound;
+
+// A brace-delimited block appearing in statement position: `{ ... }`.
+//
+// Note what this is NOT: `FunctionDef.body` is a bare `BlockItem[]`, not a
+// Compound. Both are "a run of block items", but only this one is a *statement*
+// — and being a statement is exactly what makes it nestable and what makes it
+// open a scope. Keeping the function body out of the Statement union is what
+// stops it acquiring the second of those: at ch9, a function's parameters and
+// its body's outermost block are ONE scope, so `int f(int a) { int a; }` must
+// be a duplicate rather than shadowing. Route the body through a Compound and
+// it would get a scope of its own and wrongly accept that.
+//
+// C draws the statement/expression line hard here: a block never has a value,
+// so `return { a = 2; };` is a syntax error (parseAtom can't start an
+// expression from `{`). GCC's `({ ... })` statement-expression extension is a
+// different, non-ISO construct we don't support.
+export interface Compound {
+  kind: "Compound";
+  block: BlockItem[];
+}
 
 // `if (p) c;` / `if (p) c; else a;`. Field names are Scheme's — predicate /
 // consequent / alternative — and `Conditional` below reuses all three, which is

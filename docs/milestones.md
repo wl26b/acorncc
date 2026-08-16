@@ -15,7 +15,7 @@ acorncc and passes its own test suite (M7).
 |---|-----------|--------|
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
-| M3 | Variables, scope, statements | 🔶 in progress (ch5–6 green; ch7 to go) |
+| M3 | Variables, scope, statements | ✅ done (ch5–7 green) |
 | M4 | Control flow + functions (AAPCS64) | ⬜ — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
@@ -57,9 +57,9 @@ shuttled between stack and registers (the first real register/stack juggling).
   gained a `clang -E -P` preprocess step (M7 strategy pulled forward) to strip
   the tests' `#ifdef SUPPRESS_WARNINGS` guards.
 
-### M3 — Variables, scope, statements 🔶 (in progress)
+### M3 — Variables, scope, statements ✅
 Locals, assignment, `if`/`else` and `?:`, blocks; a symbol table + real ARM64
-stack frames. Sandler ch5–7.
+stack frames. Sandler ch5–7, all green.
 
 **ch5 — local variables**, where the pipeline grows a third stage:
 - ✅ **Front end green** (147/147 lex + parse). `Declaration`/`Var`/`Assign`/
@@ -125,6 +125,44 @@ What the chapter actually taught:
   drops the dead `b` that a bare `if` otherwise emits to the next instruction.
 - Still on the table: `cbz`/`cbnz` instead of `cmp #0` + `beq`, which would
   also simplify `emitShortCircuit`. Deferred as an instruction-selection pass.
+
+**ch7 — compound statements — green end to end (202/202), and M3 closes.** Tiny
+syntactically (one node, `Compound`, holding `BlockItem[]`), and almost entirely
+a semantic-analysis chapter:
+- **The two questions finally came apart.** Through ch6 a single flat `Map`
+  answered both "is this declared in the CURRENT scope?" (duplicate check) and
+  "is it declared in ANY enclosing scope?" (undeclared check). Blocks make those
+  contradict: `int b = 1; { int b = 2; }` must shadow, so the duplicate check
+  must NOT look outward, while `int b = 1; { b = 2; }` must resolve, so the
+  lookup must. `Scope` became `{ vars, parent? }` with `lookup` walking and
+  `declaredHere` refusing to — the two functions named after the two questions.
+- **A parent link rather than an array of scopes**, because it stays a single
+  value: no `resolve*` signature changed. And the child scope is a NEW value
+  handed downward, never a push onto shared state — so "the inner scope dies at
+  `}`" is ordinary variable lifetime, and a forgotten pop isn't a bug that can
+  exist.
+- **The function body deliberately is NOT a `Compound`.** Both are "a run of
+  block items", but only a `Compound` is a *statement*, and being a statement is
+  what makes it open a scope. Route the body through one and at ch9 a function's
+  parameters and its body's outermost block would be two scopes instead of one,
+  wrongly accepting `int f(int a) { int a; }`. `parseBlock` is shared; the
+  scope-opening is not.
+- **`layoutFrame`'s `If` arm was the trap**, exactly as predicted in ch6's
+  comment: an arm can BE a block, so `if (x) { int y = 1; }` hides a declaration
+  behind a node that contributed nothing through ch6. The walk must recurse into
+  both `Compound` and the `If` arms.
+- **Codegen emits nothing for a block.** No prologue, no adjustment, not one
+  instruction. Scope was fully consumed upstream — the resolver made shadowed
+  names distinct and `layoutFrame` gave each a slot — so "which `b`?" is not a
+  question that survives to the back end. Braces leave no trace in machine code.
+- Slot allocation stays **monotonic** by decision, not oversight: sibling blocks
+  get distinct slots though their lifetimes are disjoint. Reuse is ~3 lines
+  today (save/restore `offset`, size from the max) but it's lifetime analysis in
+  disguise and stops being 3 lines at ch8/M4.
+- A parser lesson worth keeping: `parseBlock` consumes BOTH braces. An earlier
+  version left `{` to its caller, the two call sites disagreed, and
+  `parseStatement`/`parseBlock` spun into infinite mutual recursion. A function
+  that owns half a bracket pair will find a caller that mismatches it.
 
 ### M4 — Control flow + functions ⬜ (conceptual peak)
 Loops (`for`/`while`), `switch`/`case`, then function definitions/calls →

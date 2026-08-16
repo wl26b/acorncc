@@ -4,6 +4,7 @@ import type {
   Statement,
   Declaration,
   Expression,
+  BlockItem,
 } from "./ast.js";
 
 // Codegen walks the AST and produces ARM64 (AArch64) assembly text for the
@@ -74,27 +75,49 @@ function slotOf(offsets: Map<string, number>, name: string): number {
   return offset;
 }
 
+// Ch7 turned this from a flat loop over `fn.body` into a recursive walk,
+// because a block is a statement that CAN declare — the one thing an `if` arm
+// could not. Two recursion points, everything else a leaf.
+//
+// SLOT ALLOCATION IS MONOTONIC, and that's a decision rather than an oversight.
+// Sibling blocks have disjoint lifetimes, so `{ int b; } { int c; }` could
+// safely share one slot; we give them two. Reusing them means saving `offset`
+// on entering a block, restoring it on exit, and sizing the frame from the
+// maximum rather than the final value — about three lines today, but it is
+// lifetime analysis wearing a small disguise, and it stops being three lines
+// the moment ch8's loops and M4's IR arrive. "Correct-but-unoptimized" is the
+// stated target, so: wasted stack, no bookkeeping.
 function layoutFrame(fn: FunctionDef): FrameLayout {
   const offsets = new Map<string, number>();
   let offset = 0;
 
-  for (const item of fn.body) {
+  function walk(item: BlockItem) {
     switch (item.kind) {
       case "Declaration": {
         offsets.set(item.name, -4 - offset);
         offset += 4;
         break;
       }
-      // No statement can introduce a local, so none of these contribute a
-      // slot. `If` is on this list for a reason worth stating: its arms are
-      // STATEMENTS, and a declaration isn't a statement in C, so `if (x) int
-      // y;` doesn't parse and an `If` can never hide a slot from this walk.
-      // Chapter 7 breaks that — a block IS a statement, and it can declare —
-      // at which point this flat loop over `fn.body` has to become a
-      // recursive walk.
+      // The two recursion points. `Compound` is the obvious one; `If` is the
+      // trap, because an arm can BE a `{ ... }` — `if (x) { int y = 1; }`
+      // hides a declaration behind a node that contributed nothing through
+      // ch6. Miss it and slotOf throws "No stack slot for 'y.N'", which is
+      // exactly the error that guard exists to produce.
+      case "Compound": {
+        for (const it of item.block) {
+          walk(it);
+        }
+        break;
+      }
+      case "If": {
+        walk(item.consequent);
+        if (item.alternative !== undefined) walk(item.alternative);
+        break;
+      }
+      // Genuine leaves: none of these can contain a declaration, directly or
+      // otherwise.
       case "ExpressionStatement":
       case "Null":
-      case "If":
       case "Return": {
         break;
       }
@@ -103,6 +126,10 @@ function layoutFrame(fn: FunctionDef): FrameLayout {
         throw new Error(`Unhandled blockItem: ${JSON.stringify(_never)}`);
       }
     }
+  }
+
+  for (const item of fn.body) {
+    walk(item);
   }
 
   const frameSize = Math.ceil(offset / 16) * 16;
@@ -125,11 +152,7 @@ function emitFunction(fn: FunctionDef, lines: string[]): void {
   lines.push(`${label}:`);
 
   emitPrologue(frameSize, lines);
-
-  for (const item of fn.body) {
-    if (item.kind === "Declaration") emitDeclaration(item, offsets, lines);
-    else emitStatement(item, offsets, lines);
-  }
+  emitBlock(fn.body, offsets, lines);
 
   // Falling off the end of `main` returns 0 (C guarantees this for main
   // specifically). Emitted unconditionally: deciding whether a function ALWAYS
@@ -164,6 +187,23 @@ function emitEpilogue(lines: string[]): void {
   lines.push(`\tmov\tsp, fp`);
   lines.push(`\tldp\tfp, lr, [sp], #16`);
   lines.push(`\tret`);
+}
+
+// Emit a run of block items in source order — used for both the function body
+// and a nested block, which at this level are the same thing (`parseBlock` and
+// the resolver make the same identification).
+//
+// The dispatch here is the only place emit-side that cares whether an item is a
+// declaration or a statement, which is why it's worth having once.
+function emitBlock(
+  block: BlockItem[],
+  offsets: Map<string, number>,
+  lines: string[],
+): void {
+  for (const item of block) {
+    if (item.kind === "Declaration") emitDeclaration(item, offsets, lines);
+    else emitStatement(item, offsets, lines);
+  }
 }
 
 // A declaration's only runtime effect is its initializer's store — the slot
@@ -235,6 +275,15 @@ function emitStatement(
         emitStatement(stmt.alternative, offsets, lines);
       }
       lines.push(`${endLabel}:`);
+      return;
+    }
+    // A block emits its items and nothing else — no prologue, no adjustment,
+    // not a single instruction of its own. Scope was entirely consumed by
+    // earlier stages: the resolver turned shadowed names into distinct ones and
+    // layoutFrame already handed each a slot, so by here "which `b`?" is not a
+    // question that exists. Braces leave no trace in the machine code.
+    case "Compound": {
+      emitBlock(stmt.block, offsets, lines);
       return;
     }
     default: {

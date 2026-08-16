@@ -107,19 +107,30 @@ function parseFunction(ts: TokenStream): FunctionDef {
   ts.expect("(");
   ts.expect("void");
   ts.expect(")");
-  ts.expect("{");
+  const body = parseBlock(ts);
+  return { kind: "Function", name, body };
+}
 
-  const body: BlockItem[] = [];
+// <block> ::= "{" { <block-item> } "}"
+//
+// Shared by the function body and by a block in statement position — the two
+// are the same syntax, and this is the one place that knows it. Note it
+// consumes BOTH braces: an earlier version left the `{` to its caller, and the
+// two call sites promptly disagreed about whose job it was, which spun
+// parseStatement and parseBlock into infinite mutual recursion. A function that
+// owns half a bracket pair will always find a caller that mismatches it.
+function parseBlock(ts: TokenStream): BlockItem[] {
+  ts.expect("{");
+  const block: BlockItem[] = [];
   while (ts.peek().kind !== "}") {
     if (ts.peek().kind === "int") {
-      body.push(parseDeclaration(ts));
+      block.push(parseDeclaration(ts));
     } else {
-      body.push(parseStatement(ts));
+      block.push(parseStatement(ts));
     }
   }
-
   ts.expect("}");
-  return { kind: "Function", name, body };
+  return block;
 }
 
 // <declaration> ::= "int" <identifier> [ "=" <exp> ] ";"
@@ -144,8 +155,13 @@ function parseDeclaration(ts: TokenStream): Declaration {
 
 // <statement> ::= "return" <exp> ";"
 //               | "if" "(" <exp> ")" <statement> [ "else" <statement> ]
+//               | <block>
 //               | <exp> ";"
 //               | ";"
+//
+// A block holds BLOCK ITEMS, not statements — which is the whole reason
+// `{ int x = 1; }` is legal while `if (p) int x = 1;` is not. Same distinction
+// as ch5's function body, now reachable anywhere a statement can go.
 //
 // The bare `;` must be checked BEFORE falling through to the expression case,
 // or it reaches parseAtom, which has no way to start an expression from it.
@@ -183,6 +199,12 @@ function parseStatement(ts: TokenStream): Statement {
       }
 
       return { kind: "If", predicate, consequent };
+    }
+    // A block in statement position. The parser builds the node and stops
+    // there — it has no notion of scope; opening one is resolve.ts's job.
+    case "{": {
+      const block = parseBlock(ts);
+      return { kind: "Compound", block };
     }
     default: {
       const expr = parseExpression(ts, 0);

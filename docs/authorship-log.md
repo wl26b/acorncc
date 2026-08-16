@@ -61,7 +61,11 @@ carries its own.
 | M3 / ch6 | *this commit* | Parser: `if`/`else` statement with greedy dangling-else | **User** | reviewed — correct first time |
 | M3 / ch6 | *this commit* | Parser: `?:` in the Pratt loop (table row + its own fold path) | **User** | specced why `?` needs a binding power at all (else `2 * 0 ? 5 : 6` mis-parses) and why `:` must NOT have one; caught the generic `right` running before the Conditional branch (double-parsing the middle), then the alternative at floor 0 instead of `bp`, then a duplicated `expect(":")`; user derived the floor asymmetry from the C grammar's conditional-expression rule |
 | M3 / ch6 | *this commit* | `resolve.ts`: `If` + `Conditional` arms | **User** | reviewed — correct first time; noted only a truthiness-vs-`!== undefined` consistency nit |
-| M3 / ch6 | *this commit* | Codegen: `If` and `Conditional` branch emission, label/join layout | **User → Claude-reviewed** | specced the skeleton and posed the two design questions (why no operand stack; what the no-`else` shape collapses to); caught the dead `b` to the next instruction, then the half-applied fix that left `beq` pointing at an undefined label; suggested deciding the false target up front; supplied the `clang -S -O1` oracle showing `cbz` (deferred) |
+| M3 / ch6 | `7277bdf` | Codegen: `If` and `Conditional` branch emission, label/join layout | **User → Claude-reviewed** | specced the skeleton and posed the two design questions (why no operand stack; what the no-`else` shape collapses to); caught the dead `b` to the next instruction, then the half-applied fix that left `beq` pointing at an undefined label; suggested deciding the false target up front; supplied the `clang -S -O1` oracle showing `cbz` (deferred) |
+| M3 / ch7 | *this commit* | AST: `Compound` statement; function body kept as a bare `BlockItem[]` | **User** | reviewed shape; walked through the three candidate designs and why sharing `parseBlock` but NOT statement-hood is the one that survives ch9's parameter scope |
+| M3 / ch7 | *this commit* | Parser: `parseBlock` extracted and shared by function body + block statement | **User → Claude-reviewed** | caught that `parseBlock` consumed `}` but not `{`, so the two call sites disagreed and spun into infinite mutual recursion; caught the lowercase `"compound"` tag and the grammar comment saying `<statement>` where it holds block items |
+| M3 / ch7 | *this commit* | `resolve.ts`: nested `Scope` (`{ vars, parent? }`), `lookup` / `declaredHere`, the `Compound` case | **User** | posed the two-questions framing and the three structure options (chain / parent link / copied map + flag), recommended the parent link because it keeps every signature single-argument; caught the walk using `scope` where it meant `currScope` — twice, giving both a lookup that never walked and an infinite loop; caught `Compound` handled in both `resolveBlockItem` and `resolveStatement`; suggested naming the two lookups after the two questions |
+| M3 / ch7 | *this commit* | Codegen: recursive `layoutFrame` walk, `emitBlock`, `Compound` emission | **User → Claude-reviewed** | flagged the `If`-arm recursion trap a chapter ahead (an arm can BE a block) and posed the slot-reuse decision explicitly; caught that `emitBlock` was extracted but `emitFunction` still had the inline loop; comment pass recording the monotonic-allocation decision |
 
 ## Running tally of user-authored work
 
@@ -72,30 +76,32 @@ carries its own.
   `Binary` and their operator tags; `Declaration`, `Var`, `Assign`,
   `ExpressionStatement`, `Null`, `BlockItem`; `If`, `Conditional`), and the
   declaration/statement parsing including `if`/`else`.
-- **Middle end:** all of `resolve.ts`'s logic — scope map, undeclared-variable
-  and duplicate-declaration checks, lvalue validation, the unique-renaming that
-  makes ch7's shadowing tractable, and the ch6 `If`/`Conditional` recursion.
-  (Claude scaffolded the file's structure; the user filled every hole.)
+- **Middle end:** all of `resolve.ts`'s logic — the scope structure (flat map
+  through ch6, then ch7's parent-linked `Scope` with `lookup`/`declaredHere`),
+  undeclared-variable and duplicate-declaration checks, lvalue validation, the
+  unique-renaming that makes shadowing tractable, and the `If`/`Conditional`/
+  `Compound` recursion. (Claude scaffolded the file's structure at ch5; the user
+  filled every hole and has written every addition since.)
 - **Back end:** all codegen written so far — constant returns, unary ops (incl.
   `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), the
   short-circuit `&&`/`||` branch logic, ch5's **stack frames** (slot layout,
   16-byte alignment, fp-anchored addressing, prologue/epilogue, chunked
-  constants via `movz`/`movk`), and ch6's **branch emission** for `if`/`else`
-  and `?:`.
-- **Not yet touched by user (still ahead):** blocks/nested scope, loops,
-  `switch`, functions/AAPCS64, types, aggregates.
+  constants via `movz`/`movk`), ch6's **branch emission** for `if`/`else` and
+  `?:`, and ch7's **recursive frame layout** over nested blocks.
+- **Not yet touched by user (still ahead):** loops, `switch`,
+  functions/AAPCS64, types, aggregates.
 
 ## Next up (so the log stays honest about what's user work vs. not)
 
-- **ch7 — compound statements** (finishes M3): a `Block` (or `Compound`)
-  statement holding `BlockItem[]`, which makes a block a statement that CAN
-  declare — the thing ch6's arms could not. Two places get their first real
-  workout: `resolve.ts` needs nested scopes, splitting the two questions its
-  single map answers today ("declared *here*?" for the duplicate check vs.
-  "declared *anywhere enclosing*?" for the undeclared check); and
-  `layoutFrame`'s flat loop over `fn.body` must become a recursive walk, at
-  which point the unique-renaming from ch5 pays off — shadowed variables arrive
-  as distinct names and get distinct slots for free. USER-writes the scope
-  handling and codegen; Claude specs/reviews.
+- **ch8 — loops** (opens M4): `while`, `for`, `do`/`while` (the last is absent
+  from minilisp but comes with the chapter), plus `break` and `continue` —
+  which need a label to jump *to*, so the resolver grows a second job: labelling
+  each loop and binding every `break`/`continue` to its enclosing one.
+  `continue` is minilisp-relevant and jumps to the *update* clause, not the
+  exit. Declarations in the `for`-init clause get their own scope, so ch7's
+  `Scope` gets its first reuse outside a block. This is also the likely forcing
+  point for the AST→IR ("TACKY") split. USER-writes; Claude specs/reviews.
 - **Deferred from ch6:** `cbz`/`cbnz` in place of `cmp #0` + `beq`/`bne`, which
   would cover `emitShortCircuit` too. Instruction selection, not correctness.
+- **Deferred from ch7:** slot reuse for disjoint block lifetimes — deliberately
+  not done; see the note in `layoutFrame`.

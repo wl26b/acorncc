@@ -18,8 +18,11 @@
 // assume every Var refers to exactly one declaration, and every Assign has a
 // real lvalue on the left — codegen never re-asks those questions.
 //
-// Chapter 5 has exactly one scope (no nested blocks until ch7), so nothing can
-// shadow anything yet. The map is still what does the work; ch7 adds nesting.
+// Chapter 7 made scopes nest. A `Scope` is now a map of names declared here
+// plus a link to its enclosing scope, and the pass asks two different questions
+// of it — see the type below. The unique renaming from ch5 is what turns all of
+// that into something codegen never has to know about: by the time the AST
+// leaves here, shadowed variables are simply different names.
 
 import type {
   Program,
@@ -34,14 +37,43 @@ import type {
 // it and exits non-zero, which is what the invalid_semantics tests check for.
 export class ResolveError extends Error {}
 
-// Maps a name AS WRITTEN IN SOURCE to the unique name it resolves to.
+// A scope: names declared HERE, plus a link to the scope enclosing it.
 //
-// A plain Map is enough for one flat scope. Chapter 7 introduces nested blocks
-// and will need something that can answer "is this declared in the CURRENT
-// scope?" (for the duplicate check) separately from "is this declared in ANY
-// enclosing scope?" (for the undeclared check) — worth noticing that those are
-// already two different questions here, even though one map answers both today.
-type Scope = Map<string, string>;
+// `vars` maps a name AS WRITTEN IN SOURCE to the unique name it resolves to.
+// The `parent` link is what ch7 added, and it exists because two questions this
+// pass asks — answered by one flat Map through ch6 — finally come apart:
+//
+//   "declared in THIS scope?"          duplicate-declaration check → vars only
+//   "declared in ANY enclosing scope?" undeclared-variable check   → walk parents
+//
+// Both are needed at once, and a program shows why: `int b = 1; { int b = 2; }`
+// must SHADOW (so the duplicate check may not see the outer `b`), while
+// `int b = 1; { b = 2; }` must RESOLVE (so the lookup must). One map answering
+// both would have to pick.
+//
+// A parent link rather than an array of scopes because it's still a single
+// value — every resolve* signature stayed as it was — and the linked shape is
+// literally the block nesting. See `lookup` / `declaredHere` below.
+type Scope = {
+  vars: Map<string, string>;
+  parent?: Scope;
+};
+
+// The two questions, named. `lookup` walks outward and answers "what does this
+// name refer to here, if anything"; `declaredHere` refuses to walk, because a
+// name declared in an ENCLOSING scope is not a duplicate — it's something to
+// shadow.
+function lookup(scope: Scope, name: string): string | undefined {
+  for (let s: Scope | undefined = scope; s !== undefined; s = s.parent) {
+    const uniqueName = s.vars.get(name);
+    if (uniqueName !== undefined) return uniqueName;
+  }
+  return undefined;
+}
+
+function declaredHere(scope: Scope, name: string): boolean {
+  return scope.vars.has(name);
+}
 
 // Makes each declaration's name unique. `a` declared twice in different scopes
 // becomes `a.0` and `a.1`. The counter is module-level and never resets, which
@@ -57,7 +89,7 @@ export function resolve(program: Program): Program {
 }
 
 function resolveFunction(fn: FunctionDef): FunctionDef {
-  const scope: Scope = new Map();
+  const scope: Scope = { vars: new Map() };
   return { ...fn, body: fn.body.map((item) => resolveBlockItem(item, scope)) };
 }
 
@@ -69,6 +101,7 @@ function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
     case "Declaration": {
       return resolveDeclaration(item, scope);
     }
+    case "Compound":
     case "ExpressionStatement":
     case "Null":
     case "If":
@@ -90,11 +123,14 @@ function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
 // the name must already be in scope when its own initializer is resolved.
 // Bind first, then walk `init`.
 function resolveDeclaration(decl: Declaration, scope: Scope): Declaration {
-  if (scope.has(decl.name)) {
+  // `declaredHere`, NOT `lookup` — deliberately refusing to look outward. A
+  // name declared in an enclosing scope isn't a conflict, it's the thing this
+  // declaration shadows.
+  if (declaredHere(scope, decl.name)) {
     throw new ResolveError(`Duplicate declaration of '${decl.name}'`);
   }
   const uniqueName = makeUnique(decl.name);
-  scope.set(decl.name, uniqueName);
+  scope.vars.set(decl.name, uniqueName);
   decl.name = uniqueName;
   if (decl.init !== undefined) {
     decl.init = resolveExpression(decl.init, scope);
@@ -112,18 +148,33 @@ function resolveStatement(stmt: Statement, scope: Scope): Statement {
       stmt.exp = resolveExpression(stmt.exp, scope);
       return stmt;
     }
-    // The first statement that contains other statements, so this is where
-    // resolveStatement starts recursing into itself. Both arms resolve in the
-    // SAME scope — not a fresh one — and that's correct rather than a
-    // shortcut: an arm is a single statement, and a statement can't declare
-    // anything, so there is no name for a nested scope to hold. Chapter 7's
-    // blocks are what change that.
+    // Both arms resolve in the SAME scope — still correct after ch7, and worth
+    // re-checking rather than assuming. An arm is a single statement; a
+    // statement can't declare anything; so there's no name a fresh scope could
+    // hold. And when an arm *does* need one it's written `{ ... }`, which is a
+    // Compound, which opens its own below. The ch6 decision survives untouched.
     case "If": {
       stmt.predicate = resolveExpression(stmt.predicate, scope);
       stmt.consequent = resolveStatement(stmt.consequent, scope);
       if (stmt.alternative !== undefined) {
         stmt.alternative = resolveStatement(stmt.alternative, scope);
       }
+      return stmt;
+    }
+    // The one place a scope is born. Note it's a NEW value handed downward,
+    // never a push onto shared state — so "the inner scope dies at `}`" needs
+    // no teardown at all: `newScope` is a local, the caller still holds the
+    // scope it always had, and a forgotten pop is not a bug that can exist.
+    //
+    // resolveBlockItem, not resolveStatement: a block holds block items, so
+    // declarations are legal here. That's the difference from an `if` arm.
+    case "Compound": {
+      const newScope: Scope = { vars: new Map(), parent: scope };
+      const resolved: BlockItem[] = [];
+      for (const it of stmt.block) {
+        resolved.push(resolveBlockItem(it, newScope));
+      }
+      stmt.block = resolved;
       return stmt;
     }
     case "Null": {
@@ -144,7 +195,11 @@ function resolveStatement(stmt: Statement, scope: Scope): Statement {
 function resolveExpression(exp: Expression, scope: Scope): Expression {
   switch (exp.kind) {
     case "Var": {
-      const uniqueName = scope.get(exp.name);
+      // `lookup`, NOT `declaredHere` — the mirror image of the declaration
+      // check. A block sees everything enclosing it, so `{ b = 2; }` inside a
+      // function with an outer `b` resolves to that outer `b` and writes its
+      // slot. Braces scope NAMES, not storage.
+      const uniqueName = lookup(scope, exp.name);
       if (uniqueName === undefined) {
         throw new ResolveError(`Undeclared variable '${exp.name}'`);
       }

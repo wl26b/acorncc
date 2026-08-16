@@ -61,8 +61,8 @@ each ending in something that RUNS:
 
 1. **Skeleton** ✅
 2. **Expressions** (unary + binary + logical/relational, Pratt) ✅
-3. **Variables, scope, statements** 🔶 in progress (ch5–6 green; ch7 blocks to go)
-4. **Control flow + functions** (loops, `switch`, AAPCS64) — *conceptual peak*
+3. **Variables, scope, statements** ✅
+4. **Control flow + functions** (loops, `switch`, AAPCS64) ⬜ ← next — *conceptual peak*
 5. **Types + storage** (int/long/unsigned/char, pointers, enum, static storage)
 6. **Aggregates** (arrays, structs + unions + function pointers + compound literals)
 7. **minilisp bring-up + harden** (varargs + preprocessor-via-`clang -E`) — **done = minilisp passes**
@@ -123,31 +123,38 @@ associativity, and `== != < > <= >=` / `&& ||`. The driver preprocesses with
 call with `-nostdinc -I <ourheaders>`). Who wrote what:
 `docs/authorship-log.md`.
 
-**M3 in progress — chapters 5 and 6 green (183/183).** Local variables work end
-to end. The pipeline gained a **third stage**, `resolve.ts` (`--validate`), which
-rejects what parses but doesn't mean anything (undeclared variables, duplicate
-declarations, invalid lvalues) and renames each variable uniquely so ch7's
-shadowing stays tractable. Codegen gained **real ARM64 stack frames**: slot
-layout, 16-byte alignment, and fp-anchored addressing — locals anchor to `fp`
-rather than `sp` because the expression stack machine moves `sp` mid-expression.
+**M3 complete — chapters 5, 6 and 7 green (202/202).** Local variables,
+control flow and lexical scope all work end to end. The pipeline gained a
+**third stage**, `resolve.ts` (`--validate`), which rejects what parses but
+doesn't mean anything (undeclared variables, duplicate declarations, invalid
+lvalues) and renames each variable uniquely. Codegen gained **real ARM64 stack
+frames**: slot layout, 16-byte alignment, and fp-anchored addressing — locals
+anchor to `fp` rather than `sp` because the expression stack machine moves `sp`
+mid-expression.
 
 Chapter 6 added the first control flow: `If` (statement) and `Conditional`
 (expression), sharing the field names predicate / consequent / alternative.
 `?:` lives in the Pratt table for its binding power but folds on its own path —
 different arity, and its two operands take different floors (consequent 0,
-alternative `bp`). Codegen is the `&&`/`||` label machinery again, with the new
-wrinkle that `Conditional` must leave a *value* in `w0` from either arm.
+alternative `bp`).
 
-**Next → chapter 7: compound statements (blocks)**, which finishes M3. Two
-things that ch6 got away with stop working there: `resolve.ts`'s single flat
-scope needs real nesting (and the two questions its one map answers today —
-"declared *here*?" vs "declared *anywhere enclosing*?" — come apart), and
-`layoutFrame`'s flat loop over `fn.body` has to become a recursive walk, because
-a block IS a statement and it CAN declare. Codegen is USER-writes; Claude specs
-+ reviews. Oracle: `clang -S -O0` for anything about stack frames (at `-O1`
-locals live in registers and there's no frame to diff against), `-O1` for
-instruction selection. The AAPCS64 "conceptual peak" and the likely AST→IR
-("TACKY") split land around ch8–9 (M4), not now.
+Chapter 7 added blocks, and was almost entirely a semantic-analysis chapter.
+`Scope` became `{ vars, parent? }` so `lookup` (walks outward, for the
+undeclared check) and `declaredHere` (refuses to, for the duplicate check) can
+disagree — which is what lets `{ int b; }` shadow while `{ b = 2; }` resolves.
+The function body is deliberately NOT a `Compound`: both are runs of block
+items, but only a `Compound` is a *statement*, and being a statement is what
+opens a scope — routing the body through one would give ch9's parameters and
+the body's outermost block two scopes instead of one. Codegen emits **nothing**
+for a block; scope is entirely consumed upstream.
+
+**Next → M4, starting with chapter 8: loops** (`while`, `for`, `do`, plus
+`break`/`continue`), then ch9 functions and AAPCS64 — the conceptual peak. This
+is also where the AST→IR ("TACKY") split becomes hard to avoid, since loop
+codegen wants labels the AST shape doesn't naturally provide. Codegen is
+USER-writes; Claude specs + reviews. Oracle: `clang -S -O0` for anything about
+stack frames (at `-O1` locals live in registers and there's no frame to diff
+against), `-O1` for instruction selection.
 
 ### Lessons banked
 
@@ -171,6 +178,29 @@ instruction selection. The AAPCS64 "conceptual peak" and the likely AST→IR
   the `BinaryOp` union — putting `"Assign"` in that union makes codegen's `never`
   guard demand an unreachable arm. Corollary: `=` sits at bp 1, not 0, so the
   comma operator can later go below it.
+- **One data structure answering two questions is a bug waiting for a feature.**
+  `resolve.ts`'s flat `Map` answered "declared here?" and "declared anywhere
+  enclosing?" identically for two chapters — correctly, because nothing could
+  nest. Blocks made the answers contradict, and the fix wasn't cleverness, it
+  was noticing the questions had always been distinct. The ch5 comment saying so
+  is what made ch7 a rename rather than a redesign; the general habit is to name
+  the *questions* even while one lookup answers all of them.
+- **Scope by value, not by push/pop.** Entering a block builds a new `Scope`
+  linked to its parent and hands it down; leaving is just returning. "The inner
+  scope dies at `}`" becomes ordinary variable lifetime, so a forgotten pop is
+  not a bug that can exist. Prefer the version of a structure where the mistake
+  is unrepresentable over the one where it's merely avoided — same reason the
+  `If` false-branch target is chosen up front.
+- **Sameness of shape is not sameness of kind.** A function body and a `{ ... }`
+  block are both runs of block items, so they share `parseBlock`. But only the
+  block is a *statement*, and being a statement is what opens a scope — so the
+  body is a bare `BlockItem[]`, not a `Compound`. Unifying them would silently
+  give ch9's parameters a scope separate from the body's, accepting
+  `int f(int a) { int a; }`. Share the syntax, not the semantics.
+- **A function that owns half a bracket pair will find a caller that
+  mismatches.** `parseBlock` briefly consumed `}` but left `{` to its caller;
+  the two call sites disagreed and it spun into infinite mutual recursion. Make
+  the unit of consumption a complete construct.
 - **A floor is a refusal, and refusal needs a recipient.** `bp < minBP → return`
   only works because an *enclosing* loop is sitting at the same token, ready to
   fold what this call declined. Inside a bracketed operand there is no such
