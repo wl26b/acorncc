@@ -112,16 +112,16 @@ function main(): void {
   // this one WRITES TO STDOUT rather than staying silent, because its whole
   // purpose is to be read while debugging a lowering bug. It still writes no
   // files, so the "no output on error" property is unaffected. ---
-  // NOTE: while lowering is still being written, it runs ONLY for `--tacky`.
-  // Once codegen consumes TACKY this moves back onto the main path and the
-  // `generate(resolved)` call below takes `ir` instead.
+  const ir = lower(resolved);
   if (stage === "tacky") {
-    process.stdout.write(formatTacky(lower(resolved)));
+    process.stdout.write(formatTacky(ir));
     return;
   }
 
-  // --- Back end: AST -> assembly text. ---
-  const asm = generate(resolved);
+  // --- Back end: TACKY -> assembly text. A flat walk over the instruction
+  // list; by this point nothing about C survives — no scopes, no nesting, no
+  // control-flow constructs, just values and jumps. ---
+  const asm = generate(ir);
   if (stage === "codegen") return;
 
   // From here on we produce files. Compute sibling paths next to the source:
