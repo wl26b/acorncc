@@ -5,6 +5,7 @@
 //   acorncc --lex foo.c       -> run the lexer only; write NO files
 //   acorncc --parse foo.c     -> run through the parser; write NO files
 //   acorncc --validate foo.c  -> run through semantic analysis; write NO files
+//   acorncc --tacky foo.c     -> print the TACKY IR to stdout; write NO files
 //   acorncc --codegen foo.c   -> run through codegen; write NO files
 //   acorncc -S foo.c          -> emit foo.s assembly; do not assemble/link
 //
@@ -19,10 +20,18 @@ import { basename, dirname, extname, join } from "node:path";
 import { lex } from "./lexer.js";
 import { parse } from "./parser.js";
 import { resolve } from "./resolve.js";
+import { lower } from "./lower.js";
+import { formatTacky } from "./tacky.js";
 import { generate } from "./codegen.js";
 
 type Stage =
-  "lex" | "parse" | "validate" | "codegen" | "assembly" | "executable";
+  | "lex"
+  | "parse"
+  | "validate"
+  | "tacky"
+  | "codegen"
+  | "assembly"
+  | "executable";
 
 interface Options {
   stage: Stage;
@@ -43,6 +52,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case "--validate":
         stage = "validate";
+        break;
+      case "--tacky":
+        stage = "tacky";
         break;
       case "--codegen":
         stage = "codegen";
@@ -93,6 +105,20 @@ function main(): void {
   // an AST and returns an AST, so codegen never has to ask those questions. ---
   const resolved = resolve(ast);
   if (stage === "validate") return;
+
+  // --- Lowering: AST -> TACKY. Flattens expressions into named temporaries
+  // and control flow into labels and jumps, so the back end walks a list
+  // rather than a tree. `--tacky` prints it; unlike every other stage flag
+  // this one WRITES TO STDOUT rather than staying silent, because its whole
+  // purpose is to be read while debugging a lowering bug. It still writes no
+  // files, so the "no output on error" property is unaffected. ---
+  // NOTE: while lowering is still being written, it runs ONLY for `--tacky`.
+  // Once codegen consumes TACKY this moves back onto the main path and the
+  // `generate(resolved)` call below takes `ir` instead.
+  if (stage === "tacky") {
+    process.stdout.write(formatTacky(lower(resolved)));
+    return;
+  }
 
   // --- Back end: AST -> assembly text. ---
   const asm = generate(resolved);
