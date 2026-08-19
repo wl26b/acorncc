@@ -102,6 +102,9 @@ scaffold/review mode, and Claude should proactively offer it for core work.
   without codegen; `--latest-only` to skip earlier chapters).
 - **Typecheck:** `npm run typecheck` — a *separate* gate from the tests, which run
   via `tsx` and never typecheck.
+- **Read the IR:** `./acorncc --tacky foo.c` prints the TACKY for a program. A
+  lowering bug is obvious in the instruction list and nearly invisible in the
+  assembly it produces — check here first.
 - **Assembly oracle:** `tools/oracle.sh` — wraps `clang -S`, strips the noise
   (`.cfi_*`, sections, inline comments), and takes a file *or* an inline
   snippet. `--shape` compares opcode sequences with acorncc's, operands and
@@ -131,8 +134,8 @@ call with `-nostdinc -I <ourheaders>`). Who wrote what:
 `docs/authorship-log.md`.
 
 **M3 complete — chapters 5, 6 and 7 green (202/202).** Local variables,
-control flow and lexical scope all work end to end. The pipeline gained a
-**third stage**, `resolve.ts` (`--validate`), which rejects what parses but
+control flow and lexical scope all work end to end. The pipeline gained
+`resolve.ts` (`--validate`), which rejects what parses but
 doesn't mean anything (undeclared variables, duplicate declarations, invalid
 lvalues) and renames each variable uniquely. Codegen gained **real ARM64 stack
 frames**: slot layout, 16-byte alignment, and fp-anchored addressing — locals
@@ -155,16 +158,39 @@ opens a scope — routing the body through one would give ch9's parameters and
 the body's outermost block two scopes instead of one. Codegen emits **nothing**
 for a block; scope is entirely consumed upstream.
 
+**The back end now runs on an IR.** Between M3 and ch8 the pipeline gained a
+**fifth stage**: `lower.ts` turns the AST into **TACKY** (`tacky.ts`), a
+three-address IR where expressions become named temporaries and control flow
+becomes labels and jumps. `--tacky` prints it. Codegen no longer imports
+`ast.ts` at all — it walks a flat instruction list, one fixed template per
+instruction: no recursion, no label minting, no expression stack, no knowledge
+of C. Cost: ~200 net lines. Payoff: register allocation becomes expressible
+(temporaries are *names*, so you can compute live ranges over them), and the
+emitter stops growing a shape per chapter.
+
 **Next → M4, starting with chapter 8: loops** (`while`, `for`, `do`, plus
-`break`/`continue`), then ch9 functions and AAPCS64 — the conceptual peak. This
-is also where the AST→IR ("TACKY") split becomes hard to avoid, since loop
-codegen wants labels the AST shape doesn't naturally provide. Codegen is
-USER-writes; Claude specs + reviews. Oracle: `clang -S -O0` for anything about
-stack frames (at `-O1` locals live in registers and there's no frame to diff
-against), `-O1` for instruction selection.
+`break`/`continue`), then ch9 functions and AAPCS64 — the conceptual peak. Ch8
+adds **no new IR instruction and no codegen at all**; loops are `Jump` /
+`JumpIfZero` / `Label`. The new idea is in `resolve.ts`: loop labelling, binding
+each `break`/`continue` to its enclosing loop by carrying that context downward,
+the same way `scope` travels. Codegen is USER-writes; Claude specs + reviews.
+Oracle: `tools/oracle.sh` — `-O0` for structure (frames, loop shape), `-O1` for
+instruction selection.
 
 ### Lessons banked
 
+- **An IR instruction is a FIXED EXPANSION, not one machine instruction.** The
+  two rules that generate the instruction set: each must be emittable knowing
+  only itself (so operands are *values* and jump targets are *names*), and each
+  must expand the same way every time. That second rule is why `&&`/`||` can't
+  be a `Binary`: an instruction's operands are values already computed, and
+  short-circuiting is precisely the claim that one of them must *not* be. There
+  is no operand slot for "maybe". Evidence the level is right: ch8 adds no
+  instruction.
+- **Slots come from uses, not declarations.** After lowering, `layoutFrame`
+  walks the instruction list and gives each unseen `Var` a slot. An unused
+  declaration gets nothing; a name mentioned anywhere gets one. This assumes a
+  name implies a size, which stops being true at M5.
 - **The `never` exhaustiveness guard is context-dependent.** When a switch
   exhausts an operator union *directly* (the Unary guard), TS collapses the whole
   `exp` to `never` → assign `exp`. When variants are *peeled off first* by early

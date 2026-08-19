@@ -123,8 +123,9 @@ What the chapter actually taught:
   *assembler local symbol not defined*. Deciding the false target up front —
   `alternative ? freshLabel(...) : endLabel` — makes that unrepresentable, and
   drops the dead `b` that a bare `if` otherwise emits to the next instruction.
-- Still on the table: `cbz`/`cbnz` instead of `cmp #0` + `beq`, which would
-  also simplify `emitShortCircuit`. Deferred as an instruction-selection pass.
+- Deferred at the time: `cbz`/`cbnz` instead of `cmp #0` + `beq`, because it
+  would have meant three edits across ch4 and ch6 code. Landed later with the
+  IR, where all branching funnels through two instruction templates.
 
 **ch7 — compound statements — green end to end (202/202), and M3 closes.** Tiny
 syntactically (one node, `Compound`, holding `BlockItem[]`), and almost entirely
@@ -163,6 +164,41 @@ a semantic-analysis chapter:
   version left `{` to its caller, the two call sites disagreed, and
   `parseStatement`/`parseBlock` spun into infinite mutual recursion. A function
   that owns half a bracket pair will find a caller that mismatches it.
+
+### Interlude — the TACKY IR ✅
+Landed between M3 and ch8, on the `tacky` branch. The pipeline gained a fifth
+stage: `lower.ts` turns the resolved AST into **TACKY** (`tacky.ts`), a
+three-address IR. Expressions become named temporaries; control flow becomes
+labels and jumps. `--tacky` prints it.
+
+Done early rather than at ch8 because loops would otherwise have been written
+twice, and because ch1–7's 202 tests are the ideal safety net for a back-end
+refactor.
+
+- **Why:** register allocation is not expressible against an AST. The push/pop
+  expression stack parks intermediates anonymously and positionally, so there
+  is no handle to ask "does this value need to be in memory?" A TACKY temporary
+  is a *name*, which is what a live range attaches to. Liveness needs a CFG;
+  a CFG needs something flat. Secondarily, ten C control-flow constructs
+  collapse into `Jump`/`JumpIfZero`/`Label`, so the emitter stops growing a
+  shape per chapter.
+- **Two design decisions.** `Var` covers user variables and temporaries alike,
+  which is what lets the storage pass treat every name identically.
+  `TackyBinaryOp` is the AST's minus `And`/`Or`, and that omission is forced:
+  an instruction's operands are values already computed, while short-circuiting
+  is exactly the claim that one must not be evaluated.
+- **The lowering contract:** `lowerExpression` appends instructions and
+  *returns* the Val holding its result; `lowerStatement` appends and returns
+  nothing. That replaces `emitExpressionIntoW0`'s convention of leaving the
+  result in a register — a fact no type recorded and every caller had to honour.
+- **Codegen no longer imports `ast.ts`.** It walks a flat list with one fixed
+  template per instruction. `layoutFrame` lost its recursive walk entirely:
+  slots now come from *uses*, not declarations.
+- Net cost ~200 lines. No speed change — every value still gets a stack slot,
+  the same traffic the stack machine had. The point is that the policy is now
+  behind an interface a register allocator can replace.
+- Took `cbz`/`cbnz` while here (the deferred ch6 item). It was three edits
+  before; through the IR it is one.
 
 ### M4 — Control flow + functions ⬜ (conceptual peak)
 Loops (`for`/`while`), `switch`/`case`, then function definitions/calls →
