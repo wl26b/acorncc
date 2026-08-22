@@ -96,7 +96,11 @@ function resolveFunction(fn: FunctionDef): FunctionDef {
 // Block items are walked in SOURCE order, and that order is what makes
 // `a = 1; int a;` an error while `int a; a = 1;` is fine — a name is only
 // visible from its declaration onward.
-function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
+function resolveBlockItem(
+  item: BlockItem,
+  scope: Scope,
+  currentLoop?: string,
+): BlockItem {
   switch (item.kind) {
     case "Declaration": {
       return resolveDeclaration(item, scope);
@@ -105,8 +109,13 @@ function resolveBlockItem(item: BlockItem, scope: Scope): BlockItem {
     case "ExpressionStatement":
     case "Null":
     case "If":
+    case "While":
+    case "DoWhile":
+    case "For":
+    case "Break":
+    case "Continue":
     case "Return": {
-      return resolveStatement(item, scope);
+      return resolveStatement(item, scope, currentLoop);
     }
     default: {
       const _never: never = item;
@@ -138,7 +147,11 @@ function resolveDeclaration(decl: Declaration, scope: Scope): Declaration {
   return decl;
 }
 
-function resolveStatement(stmt: Statement, scope: Scope): Statement {
+function resolveStatement(
+  stmt: Statement,
+  scope: Scope,
+  currentLoop?: string,
+): Statement {
   switch (stmt.kind) {
     // Both hold a single `exp` and neither introduces a name, so they resolve
     // identically — Return's value and ExpressionStatement's discarded value are the same
@@ -155,10 +168,74 @@ function resolveStatement(stmt: Statement, scope: Scope): Statement {
     // Compound, which opens its own below. The ch6 decision survives untouched.
     case "If": {
       stmt.predicate = resolveExpression(stmt.predicate, scope);
-      stmt.consequent = resolveStatement(stmt.consequent, scope);
+      stmt.consequent = resolveStatement(stmt.consequent, scope, currentLoop);
       if (stmt.alternative !== undefined) {
-        stmt.alternative = resolveStatement(stmt.alternative, scope);
+        stmt.alternative = resolveStatement(
+          stmt.alternative,
+          scope,
+          currentLoop,
+        );
       }
+      return stmt;
+    }
+    case "While": {
+      stmt.loopId = makeUnique("while");
+      stmt.condition = resolveExpression(stmt.condition, scope);
+      stmt.body = resolveStatement(stmt.body, scope, stmt.loopId);
+      return stmt;
+    }
+    case "DoWhile": {
+      stmt.loopId = makeUnique("do");
+      stmt.condition = resolveExpression(stmt.condition, scope);
+      stmt.body = resolveStatement(stmt.body, scope, stmt.loopId);
+      return stmt;
+    }
+    case "For": {
+      const newScope: Scope = { vars: new Map(), parent: scope };
+
+      stmt.loopId = makeUnique("for");
+
+      switch (stmt.init.kind) {
+        case "InitDecl": {
+          stmt.init.declaration = resolveDeclaration(
+            stmt.init.declaration,
+            newScope,
+          );
+          break;
+        }
+        case "InitExp": {
+          if (stmt.init.exp !== undefined) {
+            stmt.init.exp = resolveExpression(stmt.init.exp, newScope);
+          }
+          break;
+        }
+        default: {
+          const _never: never = stmt.init;
+          throw new Error(`Unhandled for-init: ${JSON.stringify(_never)}`);
+        }
+      }
+
+      if (stmt.condition) {
+        stmt.condition = resolveExpression(stmt.condition, newScope);
+      }
+
+      if (stmt.post) {
+        stmt.post = resolveExpression(stmt.post, newScope);
+      }
+
+      stmt.body = resolveStatement(stmt.body, newScope, stmt.loopId);
+
+      return stmt;
+    }
+    case "Continue":
+    case "Break": {
+      if (currentLoop === undefined) {
+        throw new ResolveError(
+          `Cannot ${stmt.kind.toLowerCase()} outside of a loop.`,
+        );
+      }
+
+      stmt.loopId = currentLoop;
       return stmt;
     }
     // The one place a scope is born. Note it's a NEW value handed downward,
@@ -172,7 +249,7 @@ function resolveStatement(stmt: Statement, scope: Scope): Statement {
       const newScope: Scope = { vars: new Map(), parent: scope };
       const resolved: BlockItem[] = [];
       for (const it of stmt.block) {
-        resolved.push(resolveBlockItem(it, newScope));
+        resolved.push(resolveBlockItem(it, newScope, currentLoop));
       }
       stmt.block = resolved;
       return stmt;

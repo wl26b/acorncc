@@ -62,6 +62,11 @@ function makeLabel(hint: string): string {
   return `${hint}.${labelCounter++}`;
 }
 
+function deriveLoopLabel(id: string | undefined, role: string): string {
+  if (id === undefined) throw new Error(`Unlabelled loop reached lowering`);
+  return `${id}.${role}`;
+}
+
 export function lower(program: Program): TackyProgram {
   tempCounter = 0;
   labelCounter = 0;
@@ -149,6 +154,85 @@ function lowerStatement(stmt: Statement, out: Instruction[]): void {
       }
 
       out.push({ kind: "Label", name: endLabel });
+      break;
+    }
+    case "While": {
+      const continueLabel = deriveLoopLabel(stmt.loopId, "continue");
+      const breakLabel = deriveLoopLabel(stmt.loopId, "break");
+
+      out.push({ kind: "Label", name: continueLabel });
+      const condition = lowerExpression(stmt.condition, out);
+      out.push({ kind: "JumpIfZero", condition, target: breakLabel });
+      lowerStatement(stmt.body, out);
+      out.push({ kind: "Jump", target: continueLabel });
+
+      out.push({ kind: "Label", name: breakLabel });
+      break;
+    }
+    case "DoWhile": {
+      const startLabel = deriveLoopLabel(stmt.loopId, "start");
+      const continueLabel = deriveLoopLabel(stmt.loopId, "continue");
+      const breakLabel = deriveLoopLabel(stmt.loopId, "break");
+
+      out.push({ kind: "Label", name: startLabel });
+      lowerStatement(stmt.body, out);
+      out.push({ kind: "Label", name: continueLabel });
+      const condition = lowerExpression(stmt.condition, out);
+      out.push({ kind: "JumpIfZero", condition, target: breakLabel });
+      out.push({ kind: "Jump", target: startLabel });
+
+      out.push({ kind: "Label", name: breakLabel });
+      break;
+    }
+    case "For": {
+      const startLabel = deriveLoopLabel(stmt.loopId, "start");
+      const continueLabel = deriveLoopLabel(stmt.loopId, "continue");
+      const breakLabel = deriveLoopLabel(stmt.loopId, "break");
+
+      switch (stmt.init.kind) {
+        case "InitDecl": {
+          lowerDeclaration(stmt.init.declaration, out);
+          break;
+        }
+        // The value is computed and discarded — the init slot is evaluated for
+        // its side effects, exactly like an ExpressionStatement.
+        case "InitExp": {
+          if (stmt.init.exp !== undefined) {
+            lowerExpression(stmt.init.exp, out);
+          }
+          break;
+        }
+        default: {
+          const _never: never = stmt.init;
+          throw new Error(`Unhandled for-init: ${JSON.stringify(_never)}`);
+        }
+      }
+
+      out.push({ kind: "Label", name: startLabel });
+      if (stmt.condition) {
+        const condition = lowerExpression(stmt.condition, out);
+        out.push({ kind: "JumpIfZero", condition, target: breakLabel });
+      }
+
+      lowerStatement(stmt.body, out);
+
+      out.push({ kind: "Label", name: continueLabel });
+      if (stmt.post) {
+        lowerExpression(stmt.post, out);
+      }
+
+      out.push({ kind: "Jump", target: startLabel });
+      out.push({ kind: "Label", name: breakLabel });
+      break;
+    }
+    case "Continue": {
+      const continueLabel = deriveLoopLabel(stmt.loopId, "continue");
+      out.push({ kind: "Jump", target: continueLabel });
+      break;
+    }
+    case "Break": {
+      const breakLabel = deriveLoopLabel(stmt.loopId, "break");
+      out.push({ kind: "Jump", target: breakLabel });
       break;
     }
     // A block is its items in order and nothing else. Scope is already fully

@@ -7,6 +7,7 @@ import type {
   Declaration,
   Expression,
   BinaryOp,
+  ForInit,
 } from "./ast.js";
 
 export class ParseError extends Error {}
@@ -155,6 +156,11 @@ function parseDeclaration(ts: TokenStream): Declaration {
 
 // <statement> ::= "return" <exp> ";"
 //               | "if" "(" <exp> ")" <statement> [ "else" <statement> ]
+//               | "while" "(" <exp> ")" <statement>
+//               | "do" <statement> "while" "(" <exp> ")" ";"
+//               | "for" "(" <for-init> [ <exp> ] ";" [ <exp> ] ")" <statement>
+//               | "break" ";"
+//               | "continue" ";"
 //               | <block>
 //               | <exp> ";"
 //               | ";"
@@ -199,6 +205,81 @@ function parseStatement(ts: TokenStream): Statement {
       }
 
       return { kind: "If", predicate, consequent };
+    }
+    // TODO(you): for.
+    //
+    //   for ( <for-init> <exp>? ; <exp>? ) <statement>
+    //
+    // <for-init> supplies its OWN `;`, so this case expects only the second
+    // one. Two helpers are worth having: one that parses the init slot, and
+    // one that parses "an expression that might be absent, closed by X".
+    //
+    // Emptiness is detectable only by the closer arriving immediately — an
+    // expression cannot be attempted and then un-attempted.
+
+    case "while": {
+      ts.expect("while");
+      ts.expect("(");
+      const condition = parseExpression(ts, 0);
+      ts.expect(")");
+      const body = parseStatement(ts);
+      return { kind: "While", condition, body };
+    }
+    case "do": {
+      ts.expect("do");
+      const body = parseStatement(ts);
+      ts.expect("while");
+      ts.expect("(");
+      const condition = parseExpression(ts, 0);
+      ts.expect(")");
+      ts.expect(";");
+      return { kind: "DoWhile", condition, body };
+    }
+    case "for": {
+      ts.expect("for");
+      ts.expect("(");
+
+      // Every arm consumes the init slot's `;` — parseDeclaration eats its
+      // own, the other two eat it here — so the condition slot below always
+      // starts clean.
+      let init: ForInit;
+      if (ts.peek().kind === ";") {
+        ts.expect(";");
+        init = { kind: "InitExp" };
+      } else if (ts.peek().kind === "int") {
+        init = { kind: "InitDecl", declaration: parseDeclaration(ts) };
+      } else {
+        const exp = parseExpression(ts, 0);
+        ts.expect(";");
+        init = { kind: "InitExp", exp };
+      }
+
+      let condition: Expression | undefined;
+      if (ts.peek().kind === ";") {
+        ts.expect(";");
+      } else {
+        condition = parseExpression(ts, 0);
+        ts.expect(";");
+      }
+
+      let post: Expression | undefined;
+      if (ts.peek().kind !== ")") {
+        post = parseExpression(ts, 0);
+      }
+
+      ts.expect(")");
+      const body = parseStatement(ts);
+      return { kind: "For", init, condition, post, body };
+    }
+    case "break": {
+      ts.expect("break");
+      ts.expect(";");
+      return { kind: "Break" };
+    }
+    case "continue": {
+      ts.expect("continue");
+      ts.expect(";");
+      return { kind: "Continue" };
     }
     // A block in statement position. The parser builds the node and stops
     // there — it has no notion of scope; opening one is resolve.ts's job.

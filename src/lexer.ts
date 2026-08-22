@@ -9,6 +9,11 @@ export type TokenKind =
   | "return"
   | "if"
   | "else"
+  | "while"
+  | "do"
+  | "for"
+  | "break"
+  | "continue"
   // punctuation
   | "("
   | ")"
@@ -61,6 +66,11 @@ const KEYWORDS = new Map<string, TokenKind>([
   ["return", "return"],
   ["if", "if"],
   ["else", "else"],
+  ["while", "while"],
+  ["do", "do"],
+  ["for", "for"],
+  ["break", "break"],
+  ["continue", "continue"],
 ]);
 
 // Each regex is anchored with \G-like behaviour by matching from `pos` using

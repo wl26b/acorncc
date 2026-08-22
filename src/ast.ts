@@ -10,7 +10,13 @@
 //               | ExpressionStatement(exp)
 //               | If(exp predicate, statement consequent, statement? alternative)
 //               | Compound(block_item* block)
+//               | While(exp condition, statement body)
+//               | DoWhile(statement body, exp condition)
+//               | For(for_init init, exp? condition, exp? post, statement body)
+//               | Break
+//               | Continue
 //               | Null
+//   for_init    = InitDecl(declaration) | InitExp(exp?)
 //   exp         = Constant(int)
 //               | Var(identifier)
 //               | Unary(unary_op, exp)
@@ -47,7 +53,75 @@ export interface Declaration {
   init?: Expression;
 }
 
-export type Statement = Return | ExpressionStatement | Null | If | Compound;
+export type Statement =
+  | Return
+  | ExpressionStatement
+  | Null
+  | If
+  | Compound
+  | While
+  | DoWhile
+  | For
+  | Continue
+  | Break;
+
+export interface While {
+  kind: "While";
+  condition: Expression;
+  body: Statement;
+  loopId?: string;
+}
+
+export interface DoWhile {
+  kind: "DoWhile";
+  condition: Expression;
+  body: Statement;
+  loopId?: string;
+}
+
+export interface For {
+  kind: "For";
+  // Not optional: an absent init is `InitExp` with no expression. Keeping the
+  // slot total means every consumer switches instead of null-checking first,
+  // and it mirrors C's grammar, where the `_opt` is on the expression rather
+  // than on the slot.
+  init: ForInit;
+  condition?: Expression;
+  post?: Expression;
+  body: Statement;
+  loopId?: string;
+}
+
+// The `for` header's first slot. A wrapper, not a bare `Declaration |
+// Expression`, because TS unions FLATTEN: that bare form has seven `kind`s
+// (Declaration plus every Expression variant), so "is this a declaration?"
+// becomes a test against one of seven and no `never` guard is possible. The
+// wrapper keeps the expression kinds one level down, so the discriminant
+// answers the question this slot actually poses.
+export type ForInit = InitDecl | InitExp;
+
+export interface InitDecl {
+  kind: "InitDecl";
+  declaration: Declaration;
+}
+
+// `exp` is absent for `for (; ...)`. InitDecl has no such option — a
+// declaration can't be empty — which is why the two arms differ in more than
+// their payload type.
+export interface InitExp {
+  kind: "InitExp";
+  exp?: Expression;
+}
+
+export interface Break {
+  kind: "Break";
+  loopId?: string;
+}
+
+export interface Continue {
+  kind: "Continue";
+  loopId?: string;
+}
 
 // A brace-delimited block appearing in statement position: `{ ... }`.
 //
