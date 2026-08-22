@@ -16,7 +16,7 @@ acorncc and passes its own test suite (M7).
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
 | M3 | Variables, scope, statements | ✅ done (ch5–7 green) |
-| M4 | Control flow + functions (AAPCS64) | ⬜ — conceptual peak |
+| M4 | Control flow + functions (AAPCS64) | 🟡 in progress (ch8 green) — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
 | M7 | minilisp bring-up + harden | ⬜ — **done = minilisp passes** |
@@ -200,12 +200,32 @@ refactor.
 - Took `cbz`/`cbnz` while here (the deferred ch6 item). It was three edits
   before; through the IR it is one.
 
-### M4 — Control flow + functions ⬜ (conceptual peak)
+### M4 — Control flow + functions 🟡 (conceptual peak)
 Loops (`for`/`while`), `switch`/`case`, then function definitions/calls →
 **AAPCS64** (arg passing in x0–x7, frame setup/teardown, returns). Plus the
 operators left over from M2–M3: postfix `++`, compound assignment `+= -=`, comma,
-and bitwise `&`/`|`. Sandler ch8–9. Likely forces the AST→IR ("TACKY") split that
-`codegen.ts` currently only foreshadows.
+and bitwise `&`/`|`. Sandler ch8–9.
+
+**ch8 loops ✅ green (240/240 through ch8).** `while`, `do`/`while`, `for`,
+`break`, `continue`. The AST→IR split it was expected to force had already
+landed between M3 and ch8, and the prediction that followed from it held: ch8
+added **no IR instruction and no line of codegen**. All three loop forms are
+`Label` / `Jump` / `JumpIfZero`, which `if` and `&&` had already paid for.
+
+The chapter's whole difficulty was one question — *where does `continue` land* —
+and it has three answers. `while` needs 2 labels because its restart address and
+its continue target are the same; `do` and `for` need 3 because theirs diverge
+(`do`'s continue is the test at the bottom, `for`'s is the post-expression). That
+divergence is also why `for` cannot be desugared into `while`: the rewrite puts
+the post inside the body, where `continue` skips it.
+
+What was actually new lives in `resolve.ts`, and it is one optional parameter.
+`currentLoop` is threaded exactly like `scope` — handed down by value, *replaced*
+by each loop rather than pushed, never restored — so an inner `break` binding to
+an outer loop is unrepresentable rather than merely avoided. `break` outside any
+loop is `currentLoop === undefined`, which makes the error check free. `for` is
+the one loop that opens a scope, and the only scope in the language not hung on a
+`{`.
 
 Added by the 2026-08-08 source audit (see `minilisp-inventory.md`):
 - **`continue`** — the inventory previously said minilisp had none; it has two, in

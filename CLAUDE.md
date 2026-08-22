@@ -62,7 +62,7 @@ each ending in something that RUNS:
 1. **Skeleton** ✅
 2. **Expressions** (unary + binary + logical/relational, Pratt) ✅
 3. **Variables, scope, statements** ✅
-4. **Control flow + functions** (loops, `switch`, AAPCS64) ⬜ ← next — *conceptual peak*
+4. **Control flow + functions** (loops, `switch`, AAPCS64) 🟡 ch8 green ← *conceptual peak*
 5. **Types + storage** (int/long/unsigned/char, pointers, enum, static storage)
 6. **Aggregates** (arrays, structs + unions + function pointers + compound literals)
 7. **minilisp bring-up + harden** (varargs + preprocessor-via-`clang -E`) — **done = minilisp passes**
@@ -168,17 +168,73 @@ of C. Cost: ~200 net lines. Payoff: register allocation becomes expressible
 (temporaries are *names*, so you can compute live ranges over them), and the
 emitter stops growing a shape per chapter.
 
-**Next → M4, starting with chapter 8: loops** (`while`, `for`, `do`, plus
-`break`/`continue`), then ch9 functions and AAPCS64 — the conceptual peak. Ch8
-adds **no new IR instruction and no codegen at all**; loops are `Jump` /
-`JumpIfZero` / `Label`. The new idea is in `resolve.ts`: loop labelling, binding
-each `break`/`continue` to its enclosing loop by carrying that context downward,
-the same way `scope` travels. Codegen is USER-writes; Claude specs + reviews.
-Oracle: `tools/oracle.sh` — `-O0` for structure (frames, loop shape), `-O1` for
-instruction selection.
+**M4 started — chapter 8 green (240/240).** `while`, `do`/`while` and `for`,
+with `break` and `continue`. The prediction held exactly: ch8 added **no IR
+instruction and no line of `codegen.ts`** — all three loop forms are `Label` /
+`Jump` / `JumpIfZero`, already paid for by `if` and `&&`.
+
+Everything new is in `resolve.ts`, and it is one optional parameter.
+`currentLoop` threads exactly like `scope`: handed down by value, *replaced* by
+each loop rather than pushed, never restored. `break` outside any loop is
+`currentLoop === undefined`, so the error check is free. `for` is the one loop
+that opens a scope — and the only scope in the language not hung on a `{`.
+
+**Next → ch9: functions and AAPCS64**, the conceptual peak. Unlike ch8 this one
+adds real IR (`FunCall`) and real codegen. Oracle: `tools/oracle.sh` — `-O0` for
+structure (frames, argument slots), `-O1` for instruction selection.
 
 ### Lessons banked
 
+- **A label's *name* can be the channel between two distant parts of a tree.**
+  A `Break` is lowered in one stack frame, its loop in another, and they must
+  emit the same string. Deriving both from the loop's id (`${id}.break`) means
+  neither remembers anything — string concatenation is deterministic, so they
+  cannot drift. Minting a label at the loop and threading it down would need
+  shared state; the id *is* the state, and `resolve` already had a counter.
+  Corollary: name labels by **role**, never by position. `while` collapses its
+  restart address onto its continue target; `do` and `for` don't. Roles are
+  stable across all three, which is why `Break`/`Continue` lowering never
+  changed once written.
+- **Binding and placement are different problems.** *Which* loop a `break`
+  belongs to is caused by nesting, answered by `resolve`, and its output is an
+  id. *Where* the continue label sits is caused by loop form, answered by
+  `lower`, and needs no context at all. Running them together is what makes
+  loops look harder than they are — and keeping them apart is why `for`, whose
+  continue target is the post-expression, needed no change to `Break`.
+- **`for` cannot be desugared into `while`.** The rewrite puts the
+  post-expression at the end of the body, where `continue` skips it. A
+  transformation that preserves the common path and breaks the rare one is
+  worse than no transformation.
+- **A permissive bug cannot be found by a suite of valid programs.** The `do`
+  case forgot its trailing `;`, and every correct program still compiled —
+  the orphaned `;` was absorbed by the `Null` statement, which exists precisely
+  to make that position total. A node that makes something total will also,
+  silently, make errors disappear. `invalid_parse/` is the only thing that
+  catches it.
+- **Forgetting to recurse is invisible to types.** The `never` guard catches an
+  unhandled node *kind*; nothing catches an unvisited *child*. `For` was missing
+  its body in both `resolve` and `lower`, and the typechecker was clean both
+  times. That is what `--tacky` is for: a body absent from the instruction list
+  is unmissable there and unreadable in the assembly.
+- **TS unions flatten, so a wrapper is what preserves a question.**
+  `Declaration | Expression` has seven `kind`s, not two — `Expression` is an
+  alias, not a box. So "is this a declaration?" becomes a test against one of
+  seven, and no `never` guard is possible. `ForInit = InitDecl | InitExp` keeps
+  the expression kinds one level down so the discriminant answers the question
+  the slot actually poses. Same mechanism as keeping `"Assign"` *out* of
+  `BinaryOp`, run in the opposite direction.
+- **An optional parameter is a default you can fall into.** `currentLoop?:
+  string` made the `break`-outside-a-loop check free, and the same `?` let
+  `For` silently omit it when recursing into its body. The information is
+  identical either way; requiring the parameter (`currentLoop: string |
+  undefined`) forces every call site to *say* what it passes.
+- **Emitted order and executed order stop coinciding at the first backward
+  jump.** A `for` emits test → body → post, and runs body → post → test on
+  every repeat; the same instruction sequence gives both, which is the entire
+  job of the backward branch. Every construct before ch8 read top-to-bottom in
+  execution order too. From here, "where is this emitted" and "when does it
+  run" are separate questions — and it's why `-O1` rotates loops and its
+  structure must not be copied.
 - **An IR instruction is a FIXED EXPANSION, not one machine instruction.** The
   two rules that generate the instruction set: each must be emittable knowing
   only itself (so operands are *values* and jump targets are *names*), and each

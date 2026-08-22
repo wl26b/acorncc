@@ -71,6 +71,12 @@ carries its own.
 | Interlude | `38661fa` | `lower.ts` — AST → TACKY | **User → Claude-reviewed** | Claude scaffolded the file (contracts + `TODO(you)` holes, two leaf cases as a model); user wrote all the lowering. Claude caught the declaration copying into a fresh temporary instead of the declared name, and the `If` emitting `Label` where `Jump` belonged (both arms ran, label defined twice); user's `&&`/`\|\|` and `?:` were correct first time |
 | Interlude | `38661fa` | Codegen rewritten onto TACKY — `layoutFrame`, `loadVal`/`storeVal`, the eight templates | **User → Claude-reviewed** | Claude scaffolded and specced the ladder (chapters map onto instruction kinds); user wrote every template. Claude caught `mov` re-introducing the ch5 large-immediate bug, `bl` where `b` belonged, conditional jumps not loading their condition, and `LessOrEqual` using `LT` |
 | Interlude | `38661fa` | `--tacky` driver stage + IR printer; `tools/oracle.sh` | Claude | boilerplate/tooling |
+| M4 / ch8 | `4c939ab` | Lexer: `while` / `do` / `for` / `break` / `continue` keywords | Claude | boilerplate (no new operators — `for`'s header reuses `;` `(` `)`) |
+| M4 / ch8 | `4c939ab` | AST: `While`, `DoWhile`, `For`, `Break`, `Continue`, `loopId`, and the `ForInit` union | **User** | reviewed shape — caught the loop body typed `BlockItem[]`, which would have accepted `while (c) int x = 1;`; confirmed `loopId?` optional (only a traversal can fill it) and `Break`/`Continue` as two nodes rather than one tagged node; later argued the `ForInit` wrapper, since a bare `Declaration \| Expression` FLATTENS to seven `kind`s and so admits no `never` guard, and applied that refactor |
+| M4 / ch8 | `4c939ab` | Parser: `while`, `do`, `for`, `break`, `continue` | **User** | Claude scaffolded the cases, then reset them at the user's request so the user wrote every one; caught the `do` case never consuming its trailing `;` — a *permissive* bug that valid-program tests cannot find, because the orphaned `;` is absorbed by the `Null` statement — and three successive `for`-header bugs: non-empty slots not consuming their terminator, the post slot testing `;` instead of `)`, then the dead empty-post branch |
+| M4 / ch8 | `4c939ab` | `resolve.ts`: loop labelling (`currentLoop` threading), the `for`-header scope, `break`/`continue`-outside-a-loop errors | **User** | specced the binding-vs-placement split (which loop does this `break` belong to — resolve's job, caused by nesting; where does the continue label sit — lower's job, caused by loop form) and the by-value threading; caught `DoWhile` missing from `resolveBlockItem`'s case list (the `never` guard found it), the missing `break`/`continue` error check, and `For` not passing `loopId` into its body |
+| M4 / ch8 | `4c939ab` | `lower.ts`: `While`, `DoWhile`, `For`, `Break`, `Continue`, `deriveLoopLabel` | **User** | specced labels-by-role (so `Break`/`Continue` lowering is identical for all three forms) and the 2-vs-3 label split; caught `do`'s continue label aimed at the top of the body instead of the test, and `for` missing its body, its backward `Jump` and its start label |
+| M4 / ch8 | `4c939ab` | Codegen | — | **untouched** — the chapter added no IR instruction |
 
 ## Running tally of user-authored work
 
@@ -79,33 +85,38 @@ carries its own.
   carry associativity and node kind, and ch6's `?:` — the first operator with
   its own fold path and per-operand floors), all AST node designs (`Unary`,
   `Binary` and their operator tags; `Declaration`, `Var`, `Assign`,
-  `ExpressionStatement`, `Null`, `BlockItem`; `If`, `Conditional`), and the
-  declaration/statement parsing including `if`/`else`.
+  `ExpressionStatement`, `Null`, `BlockItem`; `If`, `Conditional`; ch8's
+  `While`, `DoWhile`, `For`, `Break`, `Continue` and the `ForInit` union), and
+  the declaration/statement parsing including `if`/`else` and all three loop
+  forms.
 - **Middle end:** all of `resolve.ts`'s logic — the scope structure (flat map
   through ch6, then ch7's parent-linked `Scope` with `lookup`/`declaredHere`),
   undeclared-variable and duplicate-declaration checks, lvalue validation, the
-  unique-renaming that makes shadowing tractable, and the `If`/`Conditional`/
-  `Compound` recursion. (Claude scaffolded the file's structure at ch5; the user
+  unique-renaming that makes shadowing tractable, the `If`/`Conditional`/
+  `Compound` recursion, and ch8's loop labelling — `currentLoop` threaded by
+  value, the `for`-header scope, and the two new errors. (Claude scaffolded the file's structure at ch5; the user
   filled every hole and has written every addition since.)
 - **Back end:** all codegen written so far — constant returns, unary ops (incl.
   `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), the
   short-circuit `&&`/`||` branch logic, ch5's **stack frames** (slot layout,
   16-byte alignment, fp-anchored addressing, prologue/epilogue, chunked
   constants via `movz`/`movk`), ch6's **branch emission** for `if`/`else` and
-  `?:`, and ch7's **recursive frame layout** over nested blocks.
-- **Not yet touched by user (still ahead):** loops, `switch`,
-  functions/AAPCS64, types, aggregates.
+  `?:`, and ch7's **recursive frame layout** over nested blocks. Since the
+  TACKY split this is `lower.ts` plus the eight codegen templates; ch8 added
+  five lowering cases and nothing in `codegen.ts`.
+- **Not yet touched by user (still ahead):** `switch`, functions/AAPCS64,
+  types, aggregates.
 
 ## Next up (so the log stays honest about what's user work vs. not)
 
-- **ch8 — loops** (opens M4): `while`, `for`, `do`/`while` (the last is absent
-  from minilisp but comes with the chapter), plus `break` and `continue` —
-  which need a label to jump *to*, so the resolver grows a second job: labelling
-  each loop and binding every `break`/`continue` to its enclosing one.
-  `continue` is minilisp-relevant and jumps to the *update* clause, not the
-  exit. Declarations in the `for`-init clause get their own scope, so ch7's
-  `Scope` gets its first reuse outside a block. This is also the likely forcing
-  point for the AST→IR ("TACKY") split. USER-writes; Claude specs/reviews.
+- **ch9 — functions + AAPCS64**: multiple function definitions, calls, and the
+  ARM64 calling convention (args in x0–x7, frame setup/teardown, returns). The
+  conceptual peak of M4. `resolve.ts` grows a function-name table alongside the
+  variable scope, and ch7's decision to keep the function body a bare
+  `BlockItem[]` finally pays: parameters and the body's outermost block must be
+  ONE scope, so `int f(int a) { int a; }` is a duplicate rather than shadowing.
+  Unlike ch8, this one *does* add IR (`FunCall`) and real codegen.
+  USER-writes; Claude specs/reviews.
 - **Deferred from ch6:** `cbz`/`cbnz` in place of `cmp #0` + `beq`/`bne`, which
   would cover `emitShortCircuit` too. Instruction selection, not correctness.
 - **Deferred from ch7:** slot reuse for disjoint block lifetimes — deliberately
