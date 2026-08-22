@@ -7,9 +7,9 @@ dist/
 # The test suite is a separate upstream repo; don't vendor it into ours.
 writing-a-c-compiler-tests/
 
-# Machine-local tool state, not project config. A shared .claude/settings.json
-# would still be committable.
-.claude/settings.local.json
+# Machine-local tool state, not project config — the permission allowlist and
+# transcripts are this machine's, not the repo's.
+.claude/
 
 # macOS.
 .DS_Store
