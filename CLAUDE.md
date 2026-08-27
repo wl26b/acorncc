@@ -120,9 +120,9 @@ scaffold/review mode, and Claude should proactively offer it for core work.
   row to `docs/authorship-log.md` recording who wrote it. Keep the rows
   CONTIGUOUS — a blank line between two rows reads as a separator in an editor
   and silently ends the table in every Markdown renderer, which is how the
-  Interlude/ch8/ch9 rows spent three commits rendering as one paragraph. This is the user's
-  record of what they personally built — don't inflate Claude's cleanups into user
-  work or vice versa.
+  Interlude/ch8/ch9 rows spent three commits rendering as one paragraph. This
+  is the user's record of what they personally built — don't inflate Claude's
+  cleanups into user work or vice versa.
 - **Remote:** `github.com/wl26b/acorncc` (private), `main` tracking
   `origin/main`. Still solo and no CI, so force-pushing to tidy history is fine
   — that stops being true the moment anyone else clones it.
