@@ -1,11 +1,12 @@
 // The Abstract Syntax Tree. This is the compiler's central data structure: the
-// parser builds it, semantic analysis (later) annotates/checks it, and codegen
-// walks it. It mirrors the grammar we've implemented so far:
+// parser builds it, `resolve.ts` renames and checks it, `lower.ts` flattens it
+// into TACKY, and codegen never sees it at all. It mirrors the grammar we've
+// implemented so far:
 //
-//   program     = Program(function_definition)
-//   function    = Function(identifier name, block_item* body)
+//   program     = Program(fun_decl*)
 //   block_item  = statement | declaration
-//   declaration = Declaration(identifier name, exp? init)
+//   declaration = VarDecl(identifier name, exp? init)
+//               | FunDecl(identifier name, identifier* params, block_item*? body)
 //   statement   = Return(exp)
 //               | ExpressionStatement(exp)
 //               | If(exp predicate, statement consequent, statement? alternative)
@@ -16,13 +17,14 @@
 //               | Break
 //               | Continue
 //               | Null
-//   for_init    = InitDecl(declaration) | InitExp(exp?)
+//   for_init    = InitDecl(var_decl) | InitExp(exp?)
 //   exp         = Constant(int)
 //               | Var(identifier)
 //               | Unary(unary_op, exp)
 //               | Binary(binary_op, exp, exp)
 //               | Assign(exp lvalue, exp rvalue)
 //               | Conditional(exp predicate, exp consequent, exp alternative)
+//               | FunCall(identifier name, exp* args)
 //   unary_op    = Negate | Complement | Not
 //
 // As the language grows, each of these gets more variants (more statement
@@ -31,13 +33,20 @@
 
 export interface Program {
   kind: "Program";
-  function: FunctionDef;
+  functions: FunDecl[];
 }
 
-export interface FunctionDef {
-  kind: "Function";
+export interface FunDecl {
+  kind: "FunDecl";
   name: string;
-  body: BlockItem[];
+  params: string[];
+  body?: BlockItem[];
+}
+
+export interface FunCall {
+  kind: "FunCall";
+  name: string;
+  args: Expression[];
 }
 
 // A function body is a sequence of block items, NOT of statements: a
@@ -45,8 +54,10 @@ export interface FunctionDef {
 // keeps the parser, the resolver and codegen all saying the same word.
 export type BlockItem = Statement | Declaration;
 
-export interface Declaration {
-  kind: "Declaration";
+export type Declaration = VarDecl | FunDecl;
+
+export interface VarDecl {
+  kind: "VarDecl";
   name: string;
   // Absent for `int a;`. The initializer is a full expression, not just a
   // literal — `int a = b * 2 + 1;` is legal.
@@ -102,7 +113,7 @@ export type ForInit = InitDecl | InitExp;
 
 export interface InitDecl {
   kind: "InitDecl";
-  declaration: Declaration;
+  declaration: VarDecl;
 }
 
 // `exp` is absent for `for (; ...)`. InitDecl has no such option — a
@@ -125,7 +136,7 @@ export interface Continue {
 
 // A brace-delimited block appearing in statement position: `{ ... }`.
 //
-// Note what this is NOT: `FunctionDef.body` is a bare `BlockItem[]`, not a
+// Note what this is NOT: `FunDecl.body` is a bare `BlockItem[]`, not a
 // Compound. Both are "a run of block items", but only this one is a *statement*
 // — and being a statement is exactly what makes it nestable and what makes it
 // open a scope. Keeping the function body out of the Statement union is what
@@ -181,7 +192,8 @@ export interface Null {
 
 // An expression is a leaf (constant, variable) or an operation applied to other
 // expressions (the recursive operands are what make the AST a tree).
-export type Expression = Constant | Var | Unary | Binary | Assign | Conditional;
+export type Expression =
+  Constant | Var | Unary | Binary | Assign | Conditional | FunCall;
 
 // The `? :` operator — C calls it the *conditional operator* (§6.5.15), and the
 // grammar production is `conditional-expression`. Not named `Ternary`: `Unary`

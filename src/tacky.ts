@@ -32,8 +32,26 @@
 //      `switch`) collapse into three instructions here, so the emitter stops
 //      growing a new shape per chapter.
 //   3. It separates "what does this program compute" (lowering) from "how do I
-//      say that in ARM64" (emission). `emitExpressionIntoW0` currently answers
-//      both at once.
+//      say that in ARM64" (emission).
+//
+// THE TWO RULES THAT GENERATE THE INSTRUCTION SET:
+//
+//   a. Each instruction must be emittable knowing ONLY ITSELF — so operands are
+//      values already computed, and jump targets are names rather than "the end
+//      of my enclosing loop". This is why `&&` can't be a `Binary`: an
+//      instruction's operands are values, and short-circuiting is precisely the
+//      claim that one of them must NOT be computed.
+//   b. Each must expand the SAME WAY EVERY TIME — meaning the expansion is a
+//      deterministic function of the instruction, NOT that it is a constant
+//      number of machine instructions. `Binary(Divide)` has always emitted two
+//      (`sdiv` + `msub`), and ch9's `FunCall` emits one per argument plus the
+//      `bl`. Variable LENGTH is fine; variable *depending on context* is not.
+//
+// `FunCall` is the first instruction with an operand LIST rather than fixed
+// slots, so its template is a loop instead of a string with holes. It is also
+// the first whose expansion is dictated by the ABI (which register each
+// argument goes in) rather than by the ISA — the same IR, retargeted, would
+// expand it completely differently.
 
 // A value an instruction reads. Either a literal or a name.
 //
@@ -57,14 +75,20 @@ export interface TackyVar {
 
 export interface TackyProgram {
   kind: "Program";
-  function: TackyFunction;
+  functions: TackyFun[];
 }
 
-// The flat list is the whole idea. Compare `FunctionDef.body`, which is a tree
+// The flat list is the whole idea. Compare `FunDecl.body`, which is a tree
 // of block items containing statements containing expressions.
-export interface TackyFunction {
-  kind: "Function";
+//
+// Always a DEFINITION — `instructions` is required. The AST's `FunDecl`
+// covers prototypes too, because C has them; there is no IR for "a name I
+// promised to define elsewhere", so lowering drops them. That is why
+// TackyProgram can hold fewer functions than Program, and it is not lost work.
+export interface TackyFun {
+  kind: "Fun";
   name: string;
+  params: string[];
   instructions: Instruction[];
 }
 
@@ -76,7 +100,15 @@ export type Instruction =
   | TackyJump
   | TackyJumpIfZero
   | TackyJumpIfNotZero
-  | TackyLabel;
+  | TackyLabel
+  | TackyFunCall;
+
+export interface TackyFunCall {
+  kind: "FunCall";
+  name: string;
+  args: Val[];
+  dst: TackyVar;
+}
 
 export interface TackyReturn {
   kind: "Return";
@@ -184,6 +216,10 @@ function formatInstruction(instr: Instruction): string {
       return `\tjump ${instr.target} if ${formatVal(instr.condition)} != 0`;
     case "Label":
       return `${instr.name}:`;
+    case "FunCall": {
+      const args = instr.args.map(formatVal).join(", ");
+      return `\t${formatVal(instr.dst)} = ${instr.name}(${args})`;
+    }
     default: {
       const _never: never = instr;
       throw new Error(`Unhandled TACKY instruction: ${JSON.stringify(_never)}`);
@@ -192,7 +228,11 @@ function formatInstruction(instr: Instruction): string {
 }
 
 export function formatTacky(program: TackyProgram): string {
-  const fn = program.function;
-  const body = fn.instructions.map(formatInstruction).join("\n");
-  return `${fn.name}:\n${body}\n`;
+  return program.functions
+    .map((fn) => {
+      const params = fn.params.join(", ");
+      const body = fn.instructions.map(formatInstruction).join("\n");
+      return `${fn.name}(${params}):\n${body}\n`;
+    })
+    .join("\n");
 }

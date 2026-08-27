@@ -16,7 +16,7 @@ acorncc and passes its own test suite (M7).
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
 | M3 | Variables, scope, statements | ✅ done (ch5–7 green) |
-| M4 | Control flow + functions (AAPCS64) | 🟡 in progress (ch8 green) — conceptual peak |
+| M4 | Control flow + functions (AAPCS64) | 🟡 in progress (ch8 green, ch9 55/61) — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
 | M7 | minilisp bring-up + harden | ⬜ — **done = minilisp passes** |
@@ -226,6 +226,46 @@ an outer loop is unrepresentable rather than merely avoided. `break` outside any
 loop is `currentLoop === undefined`, which makes the error check free. `for` is
 the one loop that opens a scope, and the only scope in the language not hung on a
 `{`.
+
+**ch9 functions + AAPCS64 🟡 55/61** (ch1–8 still green at 240/240). Multiple
+function definitions, parameters, calls, and prototypes. This chapter is the
+counter-test to ch8: where loops needed no new IR at all, `FunCall` is the first
+instruction added since the split — and the first with an operand *list* rather
+than fixed slots, so its template is a loop. It's also the first whose expansion
+is dictated by the **ABI** (which register each argument goes in) rather than by
+the ISA; the same IR retargeted would expand it completely differently.
+
+Three things the chapter established:
+
+- **Function names are never renamed.** Variables become `a.3` because nothing
+  outside the function observes them; a function name is what the *linker*
+  matches. So `resolve`'s scope map stopped mapping name→string and became
+  name→`Binding` — variables carrying a rewrite, functions a constraint — one
+  map, because C puts both in one namespace.
+- **Prototypes produce no code and still do work.** Their entire effect is in
+  `resolve`, enabling and checking *calls*. `lower` drops them, which makes the
+  AST→TACKY boundary the first stage that removes a node rather than
+  transforming it.
+- **Parameters break "slots come from uses."** A parameter's value arrives from
+  outside the instruction list, so an unused one is mentioned nowhere and gets
+  no slot. `layoutFrame` seeds from `fn.params` — a second source of truth, and
+  a small preview of what M5 does to the same rule.
+
+Two gaps remain and account for all six failing tests: **stack arguments** (>8,
+which needs `sp` alignment at the call and reads params from
+`[fp, #16 + 8*(i-8)]`) — guarded with an explicit throw rather than emitting
+`w8` and passing garbage — and the **duplicate-parameter check**
+(`int f(int a, int a)`, 2 tests).
+
+Two bugs worth recording because neither was found by a failing test. The
+prototype's `;` was consumed only on the body-allowed path, so at block scope a
+following `{ ... }` parsed as an ordinary `Compound` **statement** and ran —
+`int main(void) { int f(void) { return 1; } return 2; }` returned 1. Identical
+shape to ch8's `do`-while bug: an unconsumed terminator gets absorbed
+downstream, turning a rejection into silently different behaviour. And
+`allowBody` was optional, so the block-scope call site fell into the default —
+the ch8 lesson about optional parameters, arriving one chapter later in a form
+that silently accepted a nested function definition.
 
 Added by the 2026-08-08 source audit (see `minilisp-inventory.md`):
 - **`continue`** — the inventory previously said minilisp had none; it has two, in

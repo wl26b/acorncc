@@ -65,7 +65,7 @@ carries its own.
 | M3 / ch7 | `abbcca7` | AST: `Compound` statement; function body kept as a bare `BlockItem[]` | **User** | reviewed shape; walked through the three candidate designs and why sharing `parseBlock` but NOT statement-hood is the one that survives ch9's parameter scope |
 | M3 / ch7 | `abbcca7` | Parser: `parseBlock` extracted and shared by function body + block statement | **User → Claude-reviewed** | caught that `parseBlock` consumed `}` but not `{`, so the two call sites disagreed and spun into infinite mutual recursion; caught the lowercase `"compound"` tag and the grammar comment saying `<statement>` where it holds block items |
 | M3 / ch7 | `abbcca7` | `resolve.ts`: nested `Scope` (`{ vars, parent? }`), `lookup` / `declaredHere`, the `Compound` case | **User** | posed the two-questions framing and the three structure options (chain / parent link / copied map + flag), recommended the parent link because it keeps every signature single-argument; caught the walk using `scope` where it meant `currScope` — twice, giving both a lookup that never walked and an infinite loop; caught `Compound` handled in both `resolveBlockItem` and `resolveStatement`; suggested naming the two lookups after the two questions |
-| M3 / ch7 | `abbcca7` | Codegen: recursive `layoutFrame` walk, `emitBlock`, `Compound` emission | **User → Claude-reviewed** | flagged the `If`-arm recursion trap a chapter ahead (an arm can BE a block) and posed the slot-reuse decision explicitly; caught that `emitBlock` was extracted but `emitFunction` still had the inline loop; comment pass recording the monotonic-allocation decision |
+| M3 / ch7 | `abbcca7` | Codegen: recursive `layoutFrame` walk, `emitBlock`, `Compound` emission | **User → Claude-reviewed** | flagged the `If`-arm recursion trap a chapter ahead (an arm can BE a block) and posed the slot-reuse decision explicitly; caught that `emitBlock` was extracted but `emitFun` still had the inline loop; comment pass recording the monotonic-allocation decision |
 
 | Interlude | `38661fa` | `tacky.ts` — the IR types | Claude | proposed the instruction set and the two criteria that generate it (context-free emittability, fixed expansion); user confirmed the two decisions with consequences — `Var` covering temporaries, `And`/`Or` excluded |
 | Interlude | `38661fa` | `lower.ts` — AST → TACKY | **User → Claude-reviewed** | Claude scaffolded the file (contracts + `TODO(you)` holes, two leaf cases as a model); user wrote all the lowering. Claude caught the declaration copying into a fresh temporary instead of the declared name, and the `If` emitting `Label` where `Jump` belonged (both arms ran, label defined twice); user's `&&`/`\|\|` and `?:` were correct first time |
@@ -77,6 +77,13 @@ carries its own.
 | M4 / ch8 | `4c939ab` | `resolve.ts`: loop labelling (`currentLoop` threading), the `for`-header scope, `break`/`continue`-outside-a-loop errors | **User** | specced the binding-vs-placement split (which loop does this `break` belong to — resolve's job, caused by nesting; where does the continue label sit — lower's job, caused by loop form) and the by-value threading; caught `DoWhile` missing from `resolveBlockItem`'s case list (the `never` guard found it), the missing `break`/`continue` error check, and `For` not passing `loopId` into its body |
 | M4 / ch8 | `4c939ab` | `lower.ts`: `While`, `DoWhile`, `For`, `Break`, `Continue`, `deriveLoopLabel` | **User** | specced labels-by-role (so `Break`/`Continue` lowering is identical for all three forms) and the 2-vs-3 label split; caught `do`'s continue label aimed at the top of the body instead of the test, and `for` missing its body, its backward `Jump` and its start label |
 | M4 / ch8 | `4c939ab` | Codegen | — | **untouched** — the chapter added no IR instruction |
+| M4 / ch9 | (uncommitted) | Lexer: `,` token | Claude | boilerplate |
+| M4 / ch9 | (uncommitted) | Driver: `-c` (assemble, don't link) | Claude | boilerplate — the suite's library tests compile two translation units separately, which is the whole point of a prototype |
+| M4 / ch9 | (uncommitted) | AST: `FunDecl` (params + optional body, replacing ch1's `FunctionDef`), `FunCall`, `Declaration = VarDecl \| FunDecl`, `Program` holds many | **User** | reviewed shape — argued `body?` over two nodes because C's own terminology makes a definition a declaration that also supplies a body; caught `arity: string[]` storing types (redundant while everything is `int`) where parameter NAMES are what the body needs |
+| M4 / ch9 | (uncommitted) | Parser: `parseFunDecl`, `(void)` vs a real param list, `;`-vs-body dispatch, calls in `parseAtom`, the many-functions loop | **User** | caught the prototype's `;` never consumed (the ch8 `do` bug again), `body` computed then dropped from the returned object, and params parsed with `parseExpression` — args are expressions, params are declarations; specced the shared-prefix lookahead (call-vs-`Var` needs one token, decl-vs-decl needs two); during the cleanup pass caught the prototype's `;` consumed only on the body-allowed path, so a nested definition parsed as prototype-plus-`Compound` and RAN, and made `allowBody` required rather than optional (ch8's lesson, one chapter later) |
+| M4 / ch9 | (uncommitted) | `resolve.ts`: the `Binding` map, function names checked but never renamed, params bound into the body's scope, arity + redeclaration + called-a-variable errors | **User** | specced the one-map/tagged-value design (C's single namespace for ordinary identifiers) and the never-rename rule; caught params never bound into `newScope`, `lookupVar` walking PAST a wrong-kind binding so "used a function as a value" reported as undeclared, redeclaration rejected outright (legal C), and `defined` being overwritten by a later prototype |
+| M4 / ch9 | (uncommitted) | `tacky.ts` / `lower.ts`: `FunCall`, `params` on `TackyFun`, prototypes filtered out | **User** | posed whether `FunCall`'s variable operand count breaks the IR's founding rule (it doesn't — "fixed" means deterministic, not constant-length); Claude fixed `formatTacky` for many functions and wrote the `FunCall` printer; caught the arg-lowering `.map` nested inside `out.push`, where correctness depended on JS argument-evaluation order |
+| M4 / ch9 | (uncommitted) | Codegen: AAPCS64 — params spilled from `w0`–`w7`, args loaded back, `bl`, result from `w0`, `params` seeded into `layoutFrame` | **User → Claude-reviewed** | specced both sides as one protocol read from two ends, and supplied the `-O0` oracle showing the leaf-vs-non-leaf prologue difference; caught `>8` silently naming `w8` on both sides (added `MAX_REG_ARGS` guards) and `_${name}` hardcoded where `symbol()` belonged |
 
 ## Running tally of user-authored work
 
@@ -86,15 +93,19 @@ carries its own.
   its own fold path and per-operand floors), all AST node designs (`Unary`,
   `Binary` and their operator tags; `Declaration`, `Var`, `Assign`,
   `ExpressionStatement`, `Null`, `BlockItem`; `If`, `Conditional`; ch8's
-  `While`, `DoWhile`, `For`, `Break`, `Continue` and the `ForInit` union), and
-  the declaration/statement parsing including `if`/`else` and all three loop
-  forms.
+  `While`, `DoWhile`, `For`, `Break`, `Continue` and the `ForInit` union; ch9's
+  `FunDecl`, `FunCall` and the `VarDecl`/`FunDecl` split), and
+  the declaration/statement parsing including `if`/`else`, all three loop forms,
+  function declarations and calls.
 - **Middle end:** all of `resolve.ts`'s logic — the scope structure (flat map
   through ch6, then ch7's parent-linked `Scope` with `lookup`/`declaredHere`),
   undeclared-variable and duplicate-declaration checks, lvalue validation, the
   unique-renaming that makes shadowing tractable, the `If`/`Conditional`/
-  `Compound` recursion, and ch8's loop labelling — `currentLoop` threaded by
-  value, the `for`-header scope, and the two new errors. (Claude scaffolded the file's structure at ch5; the user
+  `Compound` recursion, ch8's loop labelling — `currentLoop` threaded by value,
+  the `for`-header scope, and the two new errors — and ch9's `Binding` map:
+  one namespace for variables and functions, function names checked but never
+  renamed, parameters bound into the body's scope, plus arity, redeclaration
+  and called-a-variable checks. (Claude scaffolded the file's structure at ch5; the user
   filled every hole and has written every addition since.)
 - **Back end:** all codegen written so far — constant returns, unary ops (incl.
   `!`), the binary-operator stack machine, the comparison ops (`cmp`/`cset`), the
@@ -102,21 +113,21 @@ carries its own.
   16-byte alignment, fp-anchored addressing, prologue/epilogue, chunked
   constants via `movz`/`movk`), ch6's **branch emission** for `if`/`else` and
   `?:`, and ch7's **recursive frame layout** over nested blocks. Since the
-  TACKY split this is `lower.ts` plus the eight codegen templates; ch8 added
-  five lowering cases and nothing in `codegen.ts`.
+  TACKY split this is `lower.ts` plus the codegen templates; ch8 added five
+  lowering cases and nothing in `codegen.ts`, and ch9 added `FunCall` plus the
+  AAPCS64 register protocol on both sides of a call.
 - **Not yet touched by user (still ahead):** `switch`, functions/AAPCS64,
   types, aggregates.
 
 ## Next up (so the log stays honest about what's user work vs. not)
 
-- **ch9 — functions + AAPCS64**: multiple function definitions, calls, and the
-  ARM64 calling convention (args in x0–x7, frame setup/teardown, returns). The
-  conceptual peak of M4. `resolve.ts` grows a function-name table alongside the
-  variable scope, and ch7's decision to keep the function body a bare
-  `BlockItem[]` finally pays: parameters and the body's outermost block must be
-  ONE scope, so `int f(int a) { int a; }` is a duplicate rather than shadowing.
-  Unlike ch8, this one *does* add IR (`FunCall`) and real codegen.
-  USER-writes; Claude specs/reviews.
+- **Finishing ch9** (55/61): stack arguments (>8, needing `sp` alignment at the
+  call and params read from `[fp, #16 + 8*(i-8)]`) and the duplicate-parameter
+  check. Both guarded with an explicit throw rather than silently wrong.
+- **ch10 — `switch`/`case`**: where `break` gains a second kind of enclosing
+  construct and ch8's merged `Break`/`Continue` case in `resolve.ts` splits.
+  Directly minilisp-relevant — the audit found all six of its `break`s are
+  switch-breaks. USER-writes; Claude specs/reviews.
 - **Deferred from ch6:** `cbz`/`cbnz` in place of `cmp #0` + `beq`/`bne`, which
   would cover `emitShortCircuit` too. Instruction selection, not correctness.
 - **Deferred from ch7:** slot reuse for disjoint block lifetimes — deliberately

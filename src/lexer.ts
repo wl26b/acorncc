@@ -20,6 +20,7 @@ export type TokenKind =
   | "{"
   | "}"
   | ";"
+  | ","
   // operators
   | "-" // negation (unary) / subtraction (binary)
   | "~" // bitwise complement (unary)
@@ -108,6 +109,7 @@ const OPERATORS: TokenKind[] = [
   "{",
   "}",
   ";",
+  ",",
   // No maximal-munch hazard: nothing else starts with `?`, and C has no `::`.
   "?",
   ":",

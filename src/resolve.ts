@@ -26,10 +26,10 @@
 
 import type {
   Program,
-  FunctionDef,
+  FunDecl,
   BlockItem,
   Statement,
-  Declaration,
+  VarDecl,
   Expression,
 } from "./ast.js";
 
@@ -39,11 +39,15 @@ export class ResolveError extends Error {}
 
 // A scope: names declared HERE, plus a link to the scope enclosing it.
 //
-// `vars` maps a name AS WRITTEN IN SOURCE to the unique name it resolves to.
+// `names` maps a name AS WRITTEN IN SOURCE to a `Binding` — what that name
+// currently means. It is one map, not two, because C puts variables and
+// functions in ONE namespace (§6.2.3 "ordinary identifiers"), so `int f; f();`
+// must be an error rather than two unrelated entities. Two maps could not see
+// each other's conflicts.
 // The `parent` link is what ch7 added, and it exists because two questions this
 // pass asks — answered by one flat Map through ch6 — finally come apart:
 //
-//   "declared in THIS scope?"          duplicate-declaration check → vars only
+//   "declared in THIS scope?"          duplicate-declaration check → this map only
 //   "declared in ANY enclosing scope?" undeclared-variable check   → walk parents
 //
 // Both are needed at once, and a program shows why: `int b = 1; { int b = 2; }`
@@ -54,8 +58,19 @@ export class ResolveError extends Error {}
 // A parent link rather than an array of scopes because it's still a single
 // value — every resolve* signature stayed as it was — and the linked shape is
 // literally the block nesting. See `lookup` / `declaredHere` below.
+// Variables carry a REWRITE, functions carry a CONSTRAINT — and that asymmetry
+// is linkage showing up in a data structure. A local's name is invisible
+// outside the function, so it is ours to rename; a function's name is what the
+// LINKER matches against libc and other objects, so it must survive untouched.
+//
+// `defined` accumulates over the traversal rather than describing one
+// declaration: C allows many declarations of a function but at most one body.
+type Binding =
+  | { kind: "Var"; uniqueName: string }
+  | { kind: "Fun"; arity: number; defined: boolean };
+
 type Scope = {
-  vars: Map<string, string>;
+  names: Map<string, Binding>;
   parent?: Scope;
 };
 
@@ -63,16 +78,16 @@ type Scope = {
 // name refer to here, if anything"; `declaredHere` refuses to walk, because a
 // name declared in an ENCLOSING scope is not a duplicate — it's something to
 // shadow.
-function lookup(scope: Scope, name: string): string | undefined {
+function lookup(scope: Scope, name: string): Binding | undefined {
   for (let s: Scope | undefined = scope; s !== undefined; s = s.parent) {
-    const uniqueName = s.vars.get(name);
-    if (uniqueName !== undefined) return uniqueName;
+    const binding = s.names.get(name);
+    if (binding) return binding;
   }
   return undefined;
 }
 
-function declaredHere(scope: Scope, name: string): boolean {
-  return scope.vars.has(name);
+function declaredHere(scope: Scope, name: string): Binding | undefined {
+  return scope.names.get(name);
 }
 
 // Makes each declaration's name unique. `a` declared twice in different scopes
@@ -85,12 +100,43 @@ function makeUnique(name: string): string {
 
 export function resolve(program: Program): Program {
   counter = 0;
-  return { ...program, function: resolveFunction(program.function) };
+  const globalScope = { names: new Map() };
+  const functions = program.functions.map((fn) =>
+    resolveFunDecl(fn, globalScope),
+  );
+  return { ...program, functions };
 }
 
-function resolveFunction(fn: FunctionDef): FunctionDef {
-  const scope: Scope = { vars: new Map() };
-  return { ...fn, body: fn.body.map((item) => resolveBlockItem(item, scope)) };
+function resolveFunDecl(fn: FunDecl, scope: Scope): FunDecl {
+  const existing = declaredHere(scope, fn.name);
+  if (existing !== undefined) {
+    if (existing.kind !== "Fun" || existing.arity !== fn.params.length) {
+      throw new ResolveError(`Conflicting declaration of '${fn.name}'`);
+    }
+    if (existing.defined && fn.body) {
+      throw new ResolveError(`Redefinition of '${fn.name}'`);
+    }
+  }
+
+  scope.names.set(fn.name, {
+    kind: "Fun",
+    arity: fn.params.length,
+    defined: existing?.defined || fn.body !== undefined,
+  });
+  if (!fn.body) return fn;
+
+  const newScope: Scope = { names: new Map(), parent: scope };
+
+  const resolvedParams: string[] = [];
+  for (const param of fn.params) {
+    const uniqueName = makeUnique(param);
+    newScope.names.set(param, { kind: "Var", uniqueName });
+    resolvedParams.push(uniqueName);
+  }
+
+  fn.params = resolvedParams;
+  fn.body = fn.body.map((item) => resolveBlockItem(item, newScope));
+  return fn;
 }
 
 // Block items are walked in SOURCE order, and that order is what makes
@@ -102,8 +148,11 @@ function resolveBlockItem(
   currentLoop?: string,
 ): BlockItem {
   switch (item.kind) {
-    case "Declaration": {
-      return resolveDeclaration(item, scope);
+    case "VarDecl": {
+      return resolveVarDecl(item, scope);
+    }
+    case "FunDecl": {
+      return resolveFunDecl(item, scope);
     }
     case "Compound":
     case "ExpressionStatement":
@@ -131,7 +180,7 @@ function resolveBlockItem(
 // VALID C (the value read is garbage, but that's the programmer's problem), so
 // the name must already be in scope when its own initializer is resolved.
 // Bind first, then walk `init`.
-function resolveDeclaration(decl: Declaration, scope: Scope): Declaration {
+function resolveVarDecl(decl: VarDecl, scope: Scope): VarDecl {
   // `declaredHere`, NOT `lookup` — deliberately refusing to look outward. A
   // name declared in an enclosing scope isn't a conflict, it's the thing this
   // declaration shadows.
@@ -139,7 +188,7 @@ function resolveDeclaration(decl: Declaration, scope: Scope): Declaration {
     throw new ResolveError(`Duplicate declaration of '${decl.name}'`);
   }
   const uniqueName = makeUnique(decl.name);
-  scope.vars.set(decl.name, uniqueName);
+  scope.names.set(decl.name, { kind: "Var", uniqueName });
   decl.name = uniqueName;
   if (decl.init !== undefined) {
     decl.init = resolveExpression(decl.init, scope);
@@ -191,13 +240,13 @@ function resolveStatement(
       return stmt;
     }
     case "For": {
-      const newScope: Scope = { vars: new Map(), parent: scope };
+      const newScope: Scope = { names: new Map(), parent: scope };
 
       stmt.loopId = makeUnique("for");
 
       switch (stmt.init.kind) {
         case "InitDecl": {
-          stmt.init.declaration = resolveDeclaration(
+          stmt.init.declaration = resolveVarDecl(
             stmt.init.declaration,
             newScope,
           );
@@ -246,7 +295,7 @@ function resolveStatement(
     // resolveBlockItem, not resolveStatement: a block holds block items, so
     // declarations are legal here. That's the difference from an `if` arm.
     case "Compound": {
-      const newScope: Scope = { vars: new Map(), parent: scope };
+      const newScope: Scope = { names: new Map(), parent: scope };
       const resolved: BlockItem[] = [];
       for (const it of stmt.block) {
         resolved.push(resolveBlockItem(it, newScope, currentLoop));
@@ -276,11 +325,34 @@ function resolveExpression(exp: Expression, scope: Scope): Expression {
       // check. A block sees everything enclosing it, so `{ b = 2; }` inside a
       // function with an outer `b` resolves to that outer `b` and writes its
       // slot. Braces scope NAMES, not storage.
-      const uniqueName = lookup(scope, exp.name);
-      if (uniqueName === undefined) {
+      const binding = lookup(scope, exp.name);
+      if (binding === undefined) {
         throw new ResolveError(`Undeclared variable '${exp.name}'`);
       }
-      exp.name = uniqueName;
+      if (binding.kind === "Fun") {
+        throw new ResolveError(
+          `Variable '${exp.name}' is a function not a var`,
+        );
+      }
+      exp.name = binding.uniqueName;
+      return exp;
+    }
+    case "FunCall": {
+      const binding = lookup(scope, exp.name);
+
+      if (!binding) {
+        throw new ResolveError("undeclared function");
+      }
+
+      if (binding.kind === "Var") {
+        throw new ResolveError("called object is not a function");
+      }
+
+      if (binding.arity !== exp.args.length) {
+        throw new ResolveError("wrong number of args");
+      }
+
+      exp.args = exp.args.map((exp) => resolveExpression(exp, scope));
       return exp;
     }
     case "Assign": {

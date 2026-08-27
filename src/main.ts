@@ -31,6 +31,7 @@ type Stage =
   | "tacky"
   | "codegen"
   | "assembly"
+  | "object"
   | "executable";
 
 interface Options {
@@ -62,6 +63,13 @@ function parseArgs(argv: string[]): Options {
       case "-S":
       case "-s":
         stage = "assembly";
+        break;
+      // Assemble but don't link. The test suite's library tests compile two
+      // translation units separately and link them afterwards, which is the
+      // whole point of a function DECLARATION: the caller is compiled without
+      // ever seeing the callee's body.
+      case "-c":
+        stage = "object";
         break;
       default:
         if (arg.startsWith("-")) {
@@ -135,9 +143,14 @@ function main(): void {
   if (stage === "assembly") return; // -S: leave the .s, stop here.
 
   // Default: hand the assembly to clang, which assembles and links it (pulling
-  // in the C runtime that calls _main) into a native executable.
+  // in the C runtime that calls _main) into a native executable. With -c we
+  // stop at the object file and leave linking to whoever invoked us.
+  const output =
+    stage === "object"
+      ? ["-c", asmPath, "-o", join(dir, `${stem}.o`)]
+      : [asmPath, "-o", exePath];
   try {
-    execFileSync("clang", [asmPath, "-o", exePath], { stdio: "inherit" });
+    execFileSync("clang", output, { stdio: "inherit" });
   } finally {
     // The .s is just an intermediate for a full build; don't leave it lying
     // around. (For -S we returned above and kept it.)

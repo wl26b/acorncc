@@ -28,15 +28,15 @@
 
 import type {
   Program,
-  FunctionDef,
+  FunDecl,
   BlockItem,
   Statement,
-  Declaration,
+  VarDecl,
   Expression,
 } from "./ast.js";
 import type {
   TackyProgram,
-  TackyFunction,
+  TackyFun,
   Instruction,
   Val,
   TackyVar,
@@ -70,17 +70,25 @@ function deriveLoopLabel(id: string | undefined, role: string): string {
 export function lower(program: Program): TackyProgram {
   tempCounter = 0;
   labelCounter = 0;
-  return { kind: "Program", function: lowerFunction(program.function) };
+  return {
+    kind: "Program",
+    functions: program.functions
+      .filter((func) => func.body !== undefined)
+      .map((func) => lowerFunDecl(func)),
+  };
 }
 
-function lowerFunction(fn: FunctionDef): TackyFunction {
+function lowerFunDecl(fn: FunDecl): TackyFun {
+  if (fn.body === undefined)
+    throw new Error(`Prototype reached lowering: ${fn.name}`);
+
   const instructions: Instruction[] = [];
 
   for (const item of fn.body) {
     lowerBlockItem(item, instructions);
   }
 
-  // The implicit `return 0` for falling off the end of main, moved here from
+  // The implicit `return 0` for falling off the end, moved here from
   // codegen. Emitted unconditionally for the same reason as before: deciding
   // whether a function always returns is a reachability analysis, not a look at
   // the last block item. It is now one IR instruction rather than four assembly
@@ -88,13 +96,25 @@ function lowerFunction(fn: FunctionDef): TackyFunction {
   // belongs at this level too.
   instructions.push({ kind: "Return", val: { kind: "Constant", value: 0 } });
 
-  return { kind: "Function", name: fn.name, instructions };
+  return { kind: "Fun", name: fn.name, params: fn.params, instructions };
 }
 
-// A declaration or a statement — the same two-way split as everywhere else.
+// A declaration or a statement — now a three-way split, because ch9 gave
+// `Declaration` two members.
 function lowerBlockItem(item: BlockItem, out: Instruction[]): void {
-  if (item.kind === "Declaration") lowerDeclaration(item, out);
-  else lowerStatement(item, out);
+  switch (item.kind) {
+    // A function declaration inside a block is always a prototype (C has no
+    // nested definitions), so there is nothing to emit. Written as a case
+    // rather than left to fall through: "emits nothing" is a decision, and an
+    // absent case is indistinguishable from a forgotten one.
+    case "FunDecl":
+      return;
+    case "VarDecl":
+      lowerDeclaration(item, out);
+      return;
+    default:
+      lowerStatement(item, out);
+  }
 }
 
 // `int a = <exp>;` is whatever computes <exp>, then a Copy into `a`.
@@ -109,7 +129,7 @@ function lowerBlockItem(item: BlockItem, out: Instruction[]): void {
 // instruction list collecting Var names. A variable never mentioned needs no
 // slot; one that is read before being written picks up a slot from the read and
 // holds whatever was there, which is exactly C's indeterminate value.
-function lowerDeclaration(decl: Declaration, out: Instruction[]): void {
+function lowerDeclaration(decl: VarDecl, out: Instruction[]): void {
   if (decl.init !== undefined) {
     const src = lowerExpression(decl.init, out);
     out.push({ kind: "Copy", src, dst: { kind: "Var", name: decl.name } });
@@ -264,6 +284,12 @@ function lowerExpression(exp: Expression, out: Instruction[]): Val {
     }
     case "Var": {
       return { kind: "Var", name: exp.name };
+    }
+    case "FunCall": {
+      const args = exp.args.map((arg) => lowerExpression(arg, out));
+      const dst = makeTemporary();
+      out.push({ kind: "FunCall", name: exp.name, args, dst });
+      return dst;
     }
     case "Unary": {
       const src = lowerExpression(exp.operand, out);

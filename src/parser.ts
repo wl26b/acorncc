@@ -1,10 +1,10 @@
 import type { Token, TokenKind } from "./lexer.js";
 import type {
   Program,
-  FunctionDef,
+  FunDecl,
   BlockItem,
   Statement,
-  Declaration,
+  VarDecl,
   Expression,
   BinaryOp,
   ForInit,
@@ -19,7 +19,14 @@ class TokenStream {
   private i = 0;
   constructor(private readonly tokens: Token[]) {}
 
-  peek(): Token {
+  peek(lookahead?: 0 | 1 | 2): Token {
+    if (lookahead) {
+      const idx = this.i + lookahead;
+      if (idx >= this.tokens.length) {
+        throw Error("help me here");
+      }
+      return this.tokens[this.i + lookahead]!;
+    }
     return this.tokens[this.i]!; // there's always an eof sentinel at the end
   }
 
@@ -87,29 +94,75 @@ const INFIX_OPS: Partial<Record<TokenKind, OpEntry>> = {
   "=": { bp: 1, node: "Assign", rightAssoc: true },
 };
 
-// <program> ::= <function>
+// <program> ::= { <function-declaration> }
+//
+// A translation unit is a list of function DECLARATIONS, not definitions: a
+// bodyless `int f(int);` is a perfectly good top-level item. It emits no code,
+// but it is what lets a call be checked before — or without — ever seeing the
+// body. At M5 this list also holds file-scope variables.
 export function parse(tokens: Token[]): Program {
   const ts = new TokenStream(tokens);
-  const fn = parseFunction(ts);
-  // After the single function, nothing but EOF may remain. Catching trailing
-  // junk here is what makes "int main(void){return 0;} foo" a parse error.
+
+  const functions: FunDecl[] = [];
+  while (ts.peek().kind !== "eof") {
+    functions.push(parseFunDecl(ts, true));
+  }
+
+  // The loop above stops at `eof`; this re-assertion is what makes trailing
+  // junk a parse error rather than a silent truncation.
   ts.expect("eof");
-  return { kind: "Program", function: fn };
+  return { kind: "Program", functions };
 }
 
-// <function> ::= "int" <identifier> "(" "void" ")" "{" { <block-item> } "}"
+// <function-declaration> ::= "int" <identifier> "(" <params> ")" ( <block> | ";" )
 //
-// The body is a sequence of BLOCK ITEMS, not statements: a declaration is not a
-// statement in C. One token of lookahead separates them — only a declaration
-// can start with a type keyword.
-function parseFunction(ts: TokenStream): FunctionDef {
+// One production for both forms, because C's own terminology nests them: a
+// definition IS a declaration that additionally supplies a body. So `body?`
+// marks the single thing that distinguishes them.
+//
+// `allowBody` is REQUIRED, not optional, and that is the ch8 lesson applied —
+// an optional parameter is a default you can fall into, and here falling into
+// it silently accepts a nested function definition. It is the caller, not this
+// function, that knows whether a body is legal: file scope yes, block scope no,
+// because a nested function could reference its enclosing frame and C declines
+// to have closures.
+function parseFunDecl(ts: TokenStream, allowBody: boolean): FunDecl {
   ts.expect("int");
   const name = ts.expect("identifier").value;
   ts.expect("(");
-  ts.expect("void");
-  ts.expect(")");
-  const body = parseBlock(ts);
-  return { kind: "Function", name, body };
+
+  let params: string[] = [];
+  if (ts.peek().kind === "void") {
+    ts.expect("void");
+    ts.expect(")");
+  } else {
+    ts.expect("int");
+    params.push(ts.expect("identifier").value);
+    while (ts.peek().kind !== ")") {
+      ts.expect(",");
+      ts.expect("int");
+      params.push(ts.expect("identifier").value);
+    }
+    ts.expect(")");
+  }
+
+  // The `;` is consumed on EVERY path — a prototype is only a complete
+  // statement once it has one, and leaving it behind let a following `{ ... }`
+  // parse as an ordinary Compound statement, which then ran. Same shape as
+  // ch8's `do`-while bug: an unconsumed terminator gets absorbed downstream and
+  // turns a rejection into silently different behaviour.
+  let body: BlockItem[] | undefined = undefined;
+  if (ts.peek().kind === ";") {
+    ts.expect(";");
+  } else if (allowBody) {
+    body = parseBlock(ts);
+  } else {
+    throw new ParseError(
+      `Function definition of '${name}' is not allowed here (C has no nested functions)`,
+    );
+  }
+
+  return { kind: "FunDecl", name, params, body };
 }
 
 // <block> ::= "{" { <block-item> } "}"
@@ -125,7 +178,11 @@ function parseBlock(ts: TokenStream): BlockItem[] {
   const block: BlockItem[] = [];
   while (ts.peek().kind !== "}") {
     if (ts.peek().kind === "int") {
-      block.push(parseDeclaration(ts));
+      if (ts.peek(2).kind === "(") {
+        block.push(parseFunDecl(ts, false));
+      } else {
+        block.push(parseVarDecl(ts));
+      }
     } else {
       block.push(parseStatement(ts));
     }
@@ -142,10 +199,10 @@ function parseBlock(ts: TokenStream): BlockItem[] {
 // terminator. `parseExpression(ts, 0)` is right while `,` doesn't exist; once it
 // does, an initializer must bind tighter than it (C calls this position an
 // assignment-expression), so the floor becomes comma's bp + 1.
-function parseDeclaration(ts: TokenStream): Declaration {
+function parseVarDecl(ts: TokenStream): VarDecl {
   ts.expect("int");
   const name = ts.expect("identifier").value;
-  const decl: Declaration = { kind: "Declaration", name };
+  const decl: VarDecl = { kind: "VarDecl", name };
   if (ts.peek().kind === "=") {
     ts.advance();
     decl.init = parseExpression(ts, 0);
@@ -206,17 +263,6 @@ function parseStatement(ts: TokenStream): Statement {
 
       return { kind: "If", predicate, consequent };
     }
-    // TODO(you): for.
-    //
-    //   for ( <for-init> <exp>? ; <exp>? ) <statement>
-    //
-    // <for-init> supplies its OWN `;`, so this case expects only the second
-    // one. Two helpers are worth having: one that parses the init slot, and
-    // one that parses "an expression that might be absent, closed by X".
-    //
-    // Emptiness is detectable only by the closer arriving immediately — an
-    // expression cannot be attempted and then un-attempted.
-
     case "while": {
       ts.expect("while");
       ts.expect("(");
@@ -247,7 +293,7 @@ function parseStatement(ts: TokenStream): Statement {
         ts.expect(";");
         init = { kind: "InitExp" };
       } else if (ts.peek().kind === "int") {
-        init = { kind: "InitDecl", declaration: parseDeclaration(ts) };
+        init = { kind: "InitDecl", declaration: parseVarDecl(ts) };
       } else {
         const exp = parseExpression(ts, 0);
         ts.expect(";");
@@ -331,6 +377,21 @@ function parseAtom(ts: TokenStream): Expression {
     }
     case "identifier": {
       ts.advance();
+
+      if (ts.peek().kind === "(") {
+        ts.expect("(");
+        const args: Expression[] = [];
+        if (ts.peek().kind !== ")") {
+          args.push(parseExpression(ts, 1));
+          while (ts.peek().kind !== ")") {
+            ts.expect(",");
+            args.push(parseExpression(ts, 1));
+          }
+        }
+        ts.expect(")");
+
+        return { kind: "FunCall", name: tok.value, args };
+      }
       return { kind: "Var", name: tok.value };
     }
     default: {

@@ -15,7 +15,7 @@
 
 import type {
   TackyProgram,
-  TackyFunction,
+  TackyFun,
   Instruction,
   Val,
   TackyVar,
@@ -59,7 +59,11 @@ function slotOf(offsets: Map<string, number>, name: string): number {
 // Allocation stays monotonic (no reuse for disjoint live ranges) because that
 // is the register allocator's job, and a worse version here would be in the
 // way.
-function layoutFrame(fn: TackyFunction): FrameLayout {
+// AAPCS64: the first eight integer arguments travel in w0-w7. Beyond that they
+// go on the caller's stack, which is not implemented.
+const MAX_REG_ARGS = 8;
+
+function layoutFrame(fn: TackyFun): FrameLayout {
   const offsets = new Map<string, number>();
   let offset = 0;
 
@@ -68,6 +72,16 @@ function layoutFrame(fn: TackyFunction): FrameLayout {
       offsets.set(name, -4 - offset);
       offset += 4;
     }
+  }
+
+  // Parameters FIRST, and this is the one place the "slots come from uses, not
+  // declarations" rule breaks. Every other value originates inside the
+  // instruction list, so mentioning it is what proves it exists. A parameter's
+  // value arrives from OUTSIDE the list — in a register — so an unused
+  // parameter appears nowhere and would get no slot for the prologue to spill
+  // into. The declaration has to be a second source of truth.
+  for (const param of fn.params) {
+    assignSlot(param);
   }
 
   for (const instr of fn.instructions) {
@@ -101,6 +115,13 @@ function layoutFrame(fn: TackyFunction): FrameLayout {
       case "Label": {
         break;
       }
+      case "FunCall": {
+        for (const arg of instr.args) {
+          if (arg.kind === "Var") assignSlot(arg.name);
+        }
+        assignSlot(instr.dst.name);
+        break;
+      }
       default: {
         const _never: never = instr;
         throw new Error(`Unhandled instruction: ${JSON.stringify(_never)}`);
@@ -114,12 +135,14 @@ function layoutFrame(fn: TackyFunction): FrameLayout {
 
 export function generate(program: TackyProgram): string {
   const lines: string[] = [];
-  emitFunction(program.function, lines);
+  for (const fn of program.functions) {
+    emitFun(fn, lines);
+  }
   // Assemblers like a trailing newline.
   return lines.join("\n") + "\n";
 }
 
-function emitFunction(fn: TackyFunction, lines: string[]): void {
+function emitFun(fn: TackyFun, lines: string[]): void {
   const { offsets, frameSize } = layoutFrame(fn);
 
   const label = symbol(fn.name);
@@ -130,10 +153,10 @@ function emitFunction(fn: TackyFunction, lines: string[]): void {
   lines.push(`\t.p2align\t2`); // 2^2 = 4-byte alignment (one instruction wide)
   lines.push(`${label}:`);
 
-  emitPrologue(frameSize, lines);
+  emitPrologue(frameSize, fn.params, offsets, lines);
 
   // Note what ISN'T here any more: the unconditional `mov w0, #0` + epilogue
-  // that used to be appended for falling off the end of main. Lowering emits a
+  // that used to be appended for falling off the end. Lowering emits a
   // `Return $0` for that, so it arrives as an ordinary instruction like any
   // other, and the epilogue is emitted by the Return template.
   for (const instr of fn.instructions) {
@@ -147,10 +170,30 @@ function emitFunction(fn: TackyFunction, lines: string[]): void {
 // record", fp at the lower address so the saved fps form a linked list that
 // debuggers walk for backtraces. The pair costs the same single instruction as
 // saving fp alone, and keeps `sp` 16-byte aligned.
-function emitPrologue(frameSize: number, lines: string[]): void {
+function emitPrologue(
+  frameSize: number,
+  params: string[],
+  offsets: Map<string, number>,
+  lines: string[],
+): void {
   lines.push(`\tstp\tfp, lr, [sp, #-16]!`);
   lines.push(`\tmov\tfp, sp`);
+
   if (frameSize > 0) lines.push(`\tsub\tsp, sp, #${frameSize}`);
+
+  // The mirror of the FunCall template: arguments arrive in w0-w7 and are
+  // spilled straight to their slots, so the body never knows a value came from
+  // a register. Same eight-register limit, same reason to refuse loudly.
+  if (params.length > MAX_REG_ARGS) {
+    throw new Error(
+      `Function with ${params.length} parameters: more than ${MAX_REG_ARGS} is not supported yet`,
+    );
+  }
+
+  for (let i = 0; i < params.length; i++) {
+    const reg = `w${i}`;
+    lines.push(`\tstr\t${reg}, [fp, #${slotOf(offsets, params[i]!)}]`);
+  }
 }
 
 // Tear it down, in exact mirror image, and return. `ret` must come last — it
@@ -333,6 +376,24 @@ function emitInstruction(
     case "JumpIfNotZero": {
       loadVal(instr.condition, "w0", offsets, lines);
       lines.push(`\tcbnz\tw0, ${instr.target}`);
+      return;
+    }
+    case "FunCall": {
+      // AAPCS64 passes the first eight arguments in w0-w7 and the rest on the
+      // stack. Only the register half is implemented; `w${i}` past 7 would name
+      // a real register and pass garbage rather than failing, so refuse loudly.
+      if (instr.args.length > MAX_REG_ARGS) {
+        throw new Error(
+          `Call to ${instr.name} with ${instr.args.length} arguments: more than ${MAX_REG_ARGS} is not supported yet`,
+        );
+      }
+      for (let i = 0; i < instr.args.length; i++) {
+        const arg = instr.args[i]!;
+        const reg = `w${i}`;
+        loadVal(arg, reg, offsets, lines);
+      }
+      lines.push(`\tbl\t${symbol(instr.name)}`);
+      storeVal("w0", instr.dst, offsets, lines);
       return;
     }
     default: {

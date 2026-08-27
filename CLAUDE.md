@@ -62,7 +62,7 @@ each ending in something that RUNS:
 1. **Skeleton** ✅
 2. **Expressions** (unary + binary + logical/relational, Pratt) ✅
 3. **Variables, scope, statements** ✅
-4. **Control flow + functions** (loops, `switch`, AAPCS64) 🟡 ch8 green ← *conceptual peak*
+4. **Control flow + functions** (loops, `switch`, AAPCS64) 🟡 ch8 green, ch9 55/61 ← *conceptual peak*
 5. **Types + storage** (int/long/unsigned/char, pointers, enum, static storage)
 6. **Aggregates** (arrays, structs + unions + function pointers + compound literals)
 7. **minilisp bring-up + harden** (varargs + preprocessor-via-`clang -E`) — **done = minilisp passes**
@@ -179,12 +179,73 @@ each loop rather than pushed, never restored. `break` outside any loop is
 `currentLoop === undefined`, so the error check is free. `for` is the one loop
 that opens a scope — and the only scope in the language not hung on a `{`.
 
-**Next → ch9: functions and AAPCS64**, the conceptual peak. Unlike ch8 this one
-adds real IR (`FunCall`) and real codegen. Oracle: `tools/oracle.sh` — `-O0` for
-structure (frames, argument slots), `-O1` for instruction selection.
+**ch9 in progress — 55/61**, with ch1–8 still green (240/240). Multiple
+functions, parameters, calls, prototypes, and AAPCS64 for up to eight arguments.
+Two gaps remain, both known and guarded rather than silently wrong:
+
+- **stack arguments** (>8) — `MAX_REG_ARGS` throws instead of emitting `w8`.
+  Args 9+ go on the caller's stack; params 9+ are read from `[fp, #16 + 8*(i-8)]`.
+- **duplicate parameter names** — `int f(int a, int a)` is accepted. The param
+  bind loop needs the same `declaredHere` check `resolveVarDecl` does.
+
+Both throw or mis-accept *loudly enough to find*, and the remaining six tests
+name exactly which is which — so the chapter is committed partial on purpose
+rather than left uncommitted.
+
+What ch9 changed, by stage. **Parser:** `Program` holds many declarations;
+`FunDecl` covers definitions AND prototypes (a definition *is* a
+declaration that also supplies a body, so `body?` is C's own containment rather
+than two ideas sharing a node). **`resolve`:** the scope map's value became a
+`Binding` — variables carry a rewrite, functions carry a constraint — because C
+puts both in ONE namespace. **`lower`:** `FunCall`, and the first stage boundary
+that DROPS a node. **Codegen:** params spilled from `w0`–`w7` in the prologue,
+args loaded back into them before `bl`; the prologue already saved `lr`,
+written to spec at ch5 when every function was a leaf.
 
 ### Lessons banked
 
+- **A function name is an EXTERNAL interface; a local's name is not.** Every
+  variable is renamed to `a.3` because nothing outside the function can observe
+  it. A function name must reach the assembler exactly as written — the linker
+  matches `_putchar` against libc by that string. Rename it and you get an
+  undefined symbol, the one error the rest of the pipeline cannot produce. Same
+  distinction, applied to storage, becomes M5's `static`.
+- **A declaration with no body produces no code and still does work.** Its
+  entire effect is in `resolve`: it puts the name and arity in scope so a *call*
+  can be checked. A stage's output is the transformed program AND the knowledge
+  that made the transformation correct; a prototype contributes only the second,
+  which is why there is nothing to lower. It is also why `mylibc.h` works at all
+  at M7 — every libc function arrives as a prototype and nothing else.
+- **An IR drops distinctions the target doesn't have.** `TackyProgram` holds
+  fewer functions than `Program`, and that is correct rather than lost work: a
+  prototype is real in C and meaningless to a machine. Every stage before ch9
+  was total — every AST node produced IR. The AST→TACKY boundary is exactly
+  where "declared" and "defined" should stop differing.
+- **"Fixed expansion" means deterministic, not constant-length.** `FunCall` has
+  a variable operand count and looked like it broke the IR's founding rule. It
+  doesn't: `Binary(Divide)` has always emitted two instructions. The rule is
+  that the expansion is a function of the instruction ALONE — no context, no
+  lookahead. What would break it is `Jump(end of my enclosing loop)`, which is
+  why targets are names.
+- **Slots come from uses — except parameters.** The ch7-era rule held because
+  every value originated inside the instruction list, so a mention proved
+  existence. A parameter's value arrives from outside, in a register, so an
+  unused one appears nowhere and gets no slot. `layoutFrame` needs `fn.params`
+  as a second source of truth. Smaller version of what M5 does to the same rule.
+- **An unconsumed terminator turns a rejection into different behaviour.** The
+  prototype's `;` was eaten only on the body-allowed path, so at block scope a
+  following `{ ... }` parsed as an ordinary `Compound` statement — and ran.
+  `int main(void) { int f(void) { return 1; } return 2; }` returned 1. Exactly
+  ch8's `do`-while bug in a new place: whatever is left behind gets absorbed by
+  a node downstream that exists to make some position total, and the error
+  disappears into working-looking code. Second time; consume the terminator on
+  every path.
+- **Required lookahead is the longest shared prefix, plus one.** Call-vs-`Var`
+  needs one token (the identifier is consumed either way). Function-decl vs
+  var-decl needs two, because `int ident` is shared. C keeps asking this
+  question and the prefixes keep getting longer — `int (*fp)(int)` at M6 — which
+  is why real parsers stop peeking and start parsing the prefix into a
+  structure, then deciding from it.
 - **A label's *name* can be the channel between two distant parts of a tree.**
   A `Break` is lowered in one stack frame, its loop in another, and they must
   emit the same string. Deriving both from the loop's id (`${id}.break`) means
