@@ -117,7 +117,10 @@ scaffold/review mode, and Claude should proactively offer it for core work.
 - Test suite lives at `writing-a-c-compiler-tests/` — a gitignored upstream repo,
   not vendored. Clone it there; a shallow clone is fine.
 - **Authorship log:** when a chapter turns green (or a notable chunk lands), add a
-  row to `docs/authorship-log.md` recording who wrote it. This is the user's
+  row to `docs/authorship-log.md` recording who wrote it. Keep the rows
+  CONTIGUOUS — a blank line between two rows reads as a separator in an editor
+  and silently ends the table in every Markdown renderer, which is how the
+  Interlude/ch8/ch9 rows spent three commits rendering as one paragraph. This is the user's
   record of what they personally built — don't inflate Claude's cleanups into user
   work or vice versa.
 - **Remote:** `github.com/wl26b/acorncc` (private), `main` tracking
