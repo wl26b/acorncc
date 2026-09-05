@@ -62,7 +62,7 @@ each ending in something that RUNS:
 1. **Skeleton** ✅
 2. **Expressions** (unary + binary + logical/relational, Pratt) ✅
 3. **Variables, scope, statements** ✅
-4. **Control flow + functions** (loops, `switch`, AAPCS64) 🟡 ch8 green, ch9 55/61 ← *conceptual peak*
+4. **Control flow + functions** (loops, `switch`, AAPCS64) 🟡 ch8+ch9 green ← *conceptual peak*
 5. **Types + storage** (int/long/unsigned/char, pointers, enum, static storage)
 6. **Aggregates** (arrays, structs + unions + function pointers + compound literals)
 7. **minilisp bring-up + harden** (varargs + preprocessor-via-`clang -E`) — **done = minilisp passes**
@@ -182,12 +182,11 @@ each loop rather than pushed, never restored. `break` outside any loop is
 `currentLoop === undefined`, so the error check is free. `for` is the one loop
 that opens a scope — and the only scope in the language not hung on a `{`.
 
-**ch9 in progress — 58/61**, with ch1–8 still green (240/240). Multiple
-functions, parameters, calls, prototypes, and the whole of AAPCS64 including
-**stack arguments**. Verified from the outside: an acorncc-compiled caller
-passing ten arguments links against a **clang-compiled** callee and gets the
-right answer, which is the only test that can catch an ABI that is
-self-consistently wrong.
+**ch9 green — 300/301 through chapter 9.** Multiple functions, parameters,
+calls, prototypes, and the whole of AAPCS64 including **stack arguments**.
+Verified from the outside: an acorncc-compiled caller passing ten arguments
+links against a **clang-compiled** callee and gets the right answer, which is
+the only test that can catch an ABI that is self-consistently wrong.
 
 The stack-argument mechanism, since it reads oddly at first: the caller does
 **not** push. `layoutFrame` reserves an outgoing-argument area at the bottom of
@@ -198,14 +197,19 @@ named from either side of the boundary between two adjacent frames. `#16` is
 the frame record, and it is constant because `fp` doesn't move; clang,
 addressing from `sp`, has to fold the frame size into that offset instead.
 
-Three tests remain:
+The one non-passing test is **`stack_alignment`**, and it is **not fixable**:
+the suite links your object against a hand-written x86-64 helper (`pushq %rbp`)
+and ships no ARM64 version. First time the cost of the ARM64 decision has been
+paid in a test that cannot run rather than in translation effort. The property
+it checks holds anyway, and by construction — `sp` never moves at a call.
 
-- **duplicate parameter names** (2) — `int f(int a, int a)` is accepted. The
-  param bind loop needs the same `declaredHere` check `resolveVarDecl` does.
-- **`stack_alignment`** (1) — **not fixable**: the suite links your object
-  against a hand-written x86-64 helper (`pushq %rbp`), and ships no ARM64
-  version. First time the cost of the ARM64 decision has been paid in a test
-  that cannot run rather than in translation effort.
+**Next → the rest of M4**, and both remaining pieces live in `extra_credit/`
+directories the chapter flag has never covered: **`switch`/`case`** (chapter 8
+extra credit — minilisp-relevant, since all six of its `break`s are
+switch-breaks) and the **leftover operators** from M2–M3 (chapter 5 extra
+credit: postfix `++`, compound assignment, comma, bitwise `&`/`|`). Run with
+`--extra-credit`. From here "chapter green" stops being a sufficient definition
+of done — a milestone earlier than `docs/milestones.md` predicted.
 
 What ch9 changed, by stage. **Parser:** `Program` holds many declarations;
 `FunDecl` covers definitions AND prototypes (a definition *is* a

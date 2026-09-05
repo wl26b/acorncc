@@ -16,7 +16,7 @@ acorncc and passes its own test suite (M7).
 | M1 | Skeleton | ✅ done |
 | M2 | Expressions | ✅ done (ch4 green) |
 | M3 | Variables, scope, statements | ✅ done (ch5–7 green) |
-| M4 | Control flow + functions (AAPCS64) | 🟡 in progress (ch8 green, ch9 55/61) — conceptual peak |
+| M4 | Control flow + functions (AAPCS64) | 🟡 in progress (ch8 + ch9 green) — conceptual peak |
 | M5 | Types + storage | ⬜ |
 | M6 | Aggregates | ⬜ |
 | M7 | minilisp bring-up + harden | ⬜ — **done = minilisp passes** |
@@ -227,7 +227,7 @@ loop is `currentLoop === undefined`, which makes the error check free. `for` is
 the one loop that opens a scope, and the only scope in the language not hung on a
 `{`.
 
-**ch9 functions + AAPCS64 🟡 58/61** (ch1–8 still green at 240/240). Multiple
+**ch9 functions + AAPCS64 ✅ green (300/301 through ch9).** Multiple
 function definitions, parameters, calls, and prototypes. This chapter is the
 counter-test to ch8: where loops needed no new IR at all, `FunCall` is the first
 instruction added since the split — and the first with an operand *list* rather
@@ -270,9 +270,22 @@ links against a clang-compiled callee and returns the right answer. A
 single-file test only proves the compiler agrees with itself; this is the only
 kind that catches an ABI that is self-consistently wrong.
 
-Three tests remain: the **duplicate-parameter check** (`int f(int a, int a)`, 2
-tests), and **`stack_alignment`**, which cannot pass — the suite links against
-a hand-written x86-64 helper (`pushq %rbp`) and ships no ARM64 equivalent.
+The single non-passing test is **`stack_alignment`**, which cannot pass on this
+target: the suite links the object against a hand-written x86-64 helper
+(`pushq %rbp`) and ships no ARM64 equivalent. The property it checks holds by
+construction anyway, since `sp` never moves at a call.
+
+The last fix was the **duplicate-parameter check**, and it split a loop that had
+been doing two jobs. Checking for duplicates applies to every declaration;
+binding and renaming only apply where there is a body. A prototype's parameter
+names are pure documentation — C ignores them, `int f(int, int);` is equally
+valid — so there is nothing to bind them into, and yet the duplicate rule still
+applies. The constraint outlives the thing it constrains.
+
+**M4 remaining:** `switch`/`case` and the leftover M2–M3 operators, both in
+`extra_credit/` directories that the chapter flag has never run. Use
+`--extra-credit`. This is where "chapter green" stops being a sufficient
+definition of done — one milestone earlier than the ⚠︎ note below predicts.
 
 Two bugs worth recording because neither was found by a failing test. The
 prototype's `;` was consumed only on the body-allowed path, so at block scope a

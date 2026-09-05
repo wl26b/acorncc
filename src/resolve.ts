@@ -123,10 +123,32 @@ function resolveFunDecl(fn: FunDecl, scope: Scope): FunDecl {
     arity: fn.params.length,
     defined: existing?.defined || fn.body !== undefined,
   });
+  // Duplicate parameter names are illegal in a PROTOTYPE too, so this runs
+  // before the early return. It's a local Set rather than the scope because
+  // checking and binding turn out to be different jobs: a prototype's parameter
+  // names are pure documentation — C ignores them, `int f(int, int);` is
+  // equally valid — so there is nothing for them to be bound INTO. The
+  // constraint outlives the thing it constrains.
+  const seen = new Set<string>();
+  for (const param of fn.params) {
+    if (seen.has(param)) {
+      throw new ResolveError(`Duplicate parameter '${param}' in '${fn.name}'`);
+    }
+    seen.add(param);
+  }
+
+  // Everything below needs a body. A declaration without one contributes only
+  // the binding set above — its whole effect is letting a CALL be checked.
   if (!fn.body) return fn;
 
   const newScope: Scope = { names: new Map(), parent: scope };
 
+  // Parameters are bound into the BODY's scope, not the enclosing one — and
+  // into the same scope the body's outermost block uses, which is why
+  // `FunDecl.body` is a bare BlockItem[] rather than a Compound. A Compound
+  // would open a second scope and make `int f(int a) { int a; }` shadowing
+  // instead of the duplicate C says it is. Uniqueness here is already
+  // guaranteed by the check above.
   const resolvedParams: string[] = [];
   for (const param of fn.params) {
     const uniqueName = makeUnique(param);
