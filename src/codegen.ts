@@ -33,6 +33,10 @@ function symbol(name: string): string {
 // negative, since values sit below the frame record. User variables and
 // temporaries are treated identically, because by this point they ARE
 // identical: both are just names.
+// `frameSize` covers TWO regions, and only the first has names in `offsets`:
+// the named slots, growing downward from `fp`, and below them an unnamed
+// outgoing-argument area at the bottom, ending at `sp`. Sizing both here is
+// what lets `sp` stay fixed for the whole function.
 interface FrameLayout {
   offsets: Map<string, number>;
   frameSize: number;
@@ -59,13 +63,30 @@ function slotOf(offsets: Map<string, number>, name: string): number {
 // Allocation stays monotonic (no reuse for disjoint live ranges) because that
 // is the register allocator's job, and a worse version here would be in the
 // way.
-// AAPCS64: the first eight integer arguments travel in w0-w7. Beyond that they
-// go on the caller's stack, which is not implemented.
+// AAPCS64: the first eight integer arguments travel in w0-w7; the rest go on
+// the CALLER's stack, at the very bottom of its frame. The caller writes them
+// at [sp, #0] upward and the callee reads them at [fp, #16] upward — the same
+// bytes, named from either side of the boundary between the two frames.
+//
+// The scratch register for that copy is w9, and it matters that it is outside
+// w0-w7: it is what makes the two loops in each direction order-independent.
 const MAX_REG_ARGS = 8;
+
+// Bytes per stack-passed argument. Apple's arm64 ABI packs them at their
+// natural size rather than padding each to 8, which is a documented divergence
+// from generic AArch64 — everything is `int` here, so 4.
+const STACK_ARG_SIZE = 4;
+
+// Where the caller's outgoing arguments sit, seen from the callee: just above
+// its own frame record (saved fp + lr, 8 bytes each). Constant for every
+// function, because `fp` never moves — clang, addressing from `sp`, has to fold
+// the frame size into this offset instead.
+const FRAME_RECORD_SIZE = 16;
 
 function layoutFrame(fn: TackyFun): FrameLayout {
   const offsets = new Map<string, number>();
   let offset = 0;
+  let stagingBytes = 0;
 
   function assignSlot(name: string) {
     if (!offsets.has(name)) {
@@ -119,6 +140,16 @@ function layoutFrame(fn: TackyFun): FrameLayout {
         for (const arg of instr.args) {
           if (arg.kind === "Var") assignSlot(arg.name);
         }
+
+        // Outgoing arguments are NOT slots: nothing here is named, and the
+        // area is scratch shared by every call this function makes, so it is
+        // sized by the widest one rather than by their sum. Reserving it in
+        // layoutFrame instead of pushing at the call is what keeps `sp` fixed.
+        stagingBytes = Math.max(
+          stagingBytes,
+          STACK_ARG_SIZE * Math.max(0, instr.args.length - MAX_REG_ARGS),
+        );
+
         assignSlot(instr.dst.name);
         break;
       }
@@ -129,7 +160,11 @@ function layoutFrame(fn: TackyFun): FrameLayout {
     }
   }
 
-  const frameSize = Math.ceil(offset / 16) * 16; // round the TOTAL up to 16
+  // Named slots AND the outgoing-argument area, rounded together. Rounding the
+  // total is what guarantees the staging area at [sp, #0] can never reach the
+  // lowest named slot — a silent corruption if it did, since the call would
+  // still work and some unrelated local would change.
+  const frameSize = Math.ceil((offset + stagingBytes) / 16) * 16;
   return { offsets, frameSize };
 }
 
@@ -181,18 +216,22 @@ function emitPrologue(
 
   if (frameSize > 0) lines.push(`\tsub\tsp, sp, #${frameSize}`);
 
-  // The mirror of the FunCall template: arguments arrive in w0-w7 and are
-  // spilled straight to their slots, so the body never knows a value came from
-  // a register. Same eight-register limit, same reason to refuse loudly.
-  if (params.length > MAX_REG_ARGS) {
-    throw new Error(
-      `Function with ${params.length} parameters: more than ${MAX_REG_ARGS} is not supported yet`,
-    );
+  // Spill every parameter into its own slot, so that from here on the body
+  // cannot tell where a value arrived from. Both loops end in the same place —
+  // only the source differs.
+
+  // Registers: one instruction each.
+  for (let i = 0; i < Math.min(params.length, MAX_REG_ARGS); i++) {
+    lines.push(`\tstr\tw${i}, [fp, #${slotOf(offsets, params[i]!)}]`);
   }
 
-  for (let i = 0; i < params.length; i++) {
-    const reg = `w${i}`;
-    lines.push(`\tstr\t${reg}, [fp, #${slotOf(offsets, params[i]!)}]`);
+  // The caller's stack: two, because memory-to-memory needs a register in
+  // between. POSITIVE fp offsets — these bytes belong to the caller's frame,
+  // and the sign is what says which side of the boundary an address is on.
+  for (let i = MAX_REG_ARGS; i < params.length; i++) {
+    const incoming = FRAME_RECORD_SIZE + (i - MAX_REG_ARGS) * STACK_ARG_SIZE;
+    lines.push(`\tldr\tw9, [fp, #${incoming}]`);
+    lines.push(`\tstr\tw9, [fp, #${slotOf(offsets, params[i]!)}]`);
   }
 }
 
@@ -379,19 +418,22 @@ function emitInstruction(
       return;
     }
     case "FunCall": {
-      // AAPCS64 passes the first eight arguments in w0-w7 and the rest on the
-      // stack. Only the register half is implemented; `w${i}` past 7 would name
-      // a real register and pass garbage rather than failing, so refuse loudly.
-      if (instr.args.length > MAX_REG_ARGS) {
-        throw new Error(
-          `Call to ${instr.name} with ${instr.args.length} arguments: more than ${MAX_REG_ARGS} is not supported yet`,
-        );
+      // The mirror of emitPrologue: put every argument where the callee will
+      // look for it. Note what ISN'T here — no push, no `sp` adjustment around
+      // the call. layoutFrame already reserved room for the widest call this
+      // function makes, so `sp` is untouched and its 16-byte alignment holds by
+      // construction rather than by fixing it up here.
+      for (let i = 0; i < Math.min(instr.args.length, MAX_REG_ARGS); i++) {
+        loadVal(instr.args[i]!, `w${i}`, offsets, lines);
       }
-      for (let i = 0; i < instr.args.length; i++) {
-        const arg = instr.args[i]!;
-        const reg = `w${i}`;
-        loadVal(arg, reg, offsets, lines);
+
+      // Straight to [sp, #0] upward — the bottom of our own frame is what the
+      // callee will see as the bytes just above its frame record.
+      for (let i = MAX_REG_ARGS; i < instr.args.length; i++) {
+        loadVal(instr.args[i]!, "w9", offsets, lines);
+        lines.push(`\tstr\tw9, [sp, #${(i - MAX_REG_ARGS) * STACK_ARG_SIZE}]`);
       }
+
       lines.push(`\tbl\t${symbol(instr.name)}`);
       storeVal("w0", instr.dst, offsets, lines);
       return;

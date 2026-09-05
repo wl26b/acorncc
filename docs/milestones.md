@@ -227,7 +227,7 @@ loop is `currentLoop === undefined`, which makes the error check free. `for` is
 the one loop that opens a scope, and the only scope in the language not hung on a
 `{`.
 
-**ch9 functions + AAPCS64 🟡 55/61** (ch1–8 still green at 240/240). Multiple
+**ch9 functions + AAPCS64 🟡 58/61** (ch1–8 still green at 240/240). Multiple
 function definitions, parameters, calls, and prototypes. This chapter is the
 counter-test to ch8: where loops needed no new IR at all, `FunCall` is the first
 instruction added since the split — and the first with an operand *list* rather
@@ -251,11 +251,28 @@ Three things the chapter established:
   no slot. `layoutFrame` seeds from `fn.params` — a second source of truth, and
   a small preview of what M5 does to the same rule.
 
-Two gaps remain and account for all six failing tests: **stack arguments** (>8,
-which needs `sp` alignment at the call and reads params from
-`[fp, #16 + 8*(i-8)]`) — guarded with an explicit throw rather than emitting
-`w8` and passing garbage — and the **duplicate-parameter check**
-(`int f(int a, int a)`, 2 tests).
+**Stack arguments are done**, and the shape is worth recording because the
+obvious mental model is wrong. The caller does not *push*: `layoutFrame`
+reserves an outgoing-argument area at the bottom of the caller's own frame,
+sized by the widest call it makes, so `sp` never moves across a call and the
+ABI's 16-byte alignment is satisfied by construction rather than fixed up. The
+caller writes args 9+ at `[sp, #0]` upward; the callee reads them at
+`[fp, #16]` upward. Same bytes — the two frames are adjacent, and the arguments
+sit exactly on the boundary. `#16` is the frame record and is constant, because
+`fp` doesn't move; clang addresses from `sp` and must fold the frame size in.
+
+That area is *not* slots: nothing in it is named, and it's scratch reused by
+every call, so it is sized by the maximum rather than the sum. It is the first
+thing in the frame that `offsets` doesn't answer for.
+
+Verified by **separate compilation** — an acorncc caller passing ten arguments
+links against a clang-compiled callee and returns the right answer. A
+single-file test only proves the compiler agrees with itself; this is the only
+kind that catches an ABI that is self-consistently wrong.
+
+Three tests remain: the **duplicate-parameter check** (`int f(int a, int a)`, 2
+tests), and **`stack_alignment`**, which cannot pass — the suite links against
+a hand-written x86-64 helper (`pushq %rbp`) and ships no ARM64 equivalent.
 
 Two bugs worth recording because neither was found by a failing test. The
 prototype's `;` was consumed only on the body-allowed path, so at block scope a

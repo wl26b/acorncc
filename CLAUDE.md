@@ -182,18 +182,30 @@ each loop rather than pushed, never restored. `break` outside any loop is
 `currentLoop === undefined`, so the error check is free. `for` is the one loop
 that opens a scope — and the only scope in the language not hung on a `{`.
 
-**ch9 in progress — 55/61**, with ch1–8 still green (240/240). Multiple
-functions, parameters, calls, prototypes, and AAPCS64 for up to eight arguments.
-Two gaps remain, both known and guarded rather than silently wrong:
+**ch9 in progress — 58/61**, with ch1–8 still green (240/240). Multiple
+functions, parameters, calls, prototypes, and the whole of AAPCS64 including
+**stack arguments**. Verified from the outside: an acorncc-compiled caller
+passing ten arguments links against a **clang-compiled** callee and gets the
+right answer, which is the only test that can catch an ABI that is
+self-consistently wrong.
 
-- **stack arguments** (>8) — `MAX_REG_ARGS` throws instead of emitting `w8`.
-  Args 9+ go on the caller's stack; params 9+ are read from `[fp, #16 + 8*(i-8)]`.
-- **duplicate parameter names** — `int f(int a, int a)` is accepted. The param
-  bind loop needs the same `declaredHere` check `resolveVarDecl` does.
+The stack-argument mechanism, since it reads oddly at first: the caller does
+**not** push. `layoutFrame` reserves an outgoing-argument area at the bottom of
+the caller's own frame, sized by its widest call, so `sp` never moves and the
+16-byte alignment holds by construction. The caller writes args 9+ at
+`[sp, #0]` upward; the callee reads them at `[fp, #16]` upward — the same bytes,
+named from either side of the boundary between two adjacent frames. `#16` is
+the frame record, and it is constant because `fp` doesn't move; clang,
+addressing from `sp`, has to fold the frame size into that offset instead.
 
-Both throw or mis-accept *loudly enough to find*, and the remaining six tests
-name exactly which is which — so the chapter is committed partial on purpose
-rather than left uncommitted.
+Three tests remain:
+
+- **duplicate parameter names** (2) — `int f(int a, int a)` is accepted. The
+  param bind loop needs the same `declaredHere` check `resolveVarDecl` does.
+- **`stack_alignment`** (1) — **not fixable**: the suite links your object
+  against a hand-written x86-64 helper (`pushq %rbp`), and ships no ARM64
+  version. First time the cost of the ARM64 decision has been paid in a test
+  that cannot run rather than in translation effort.
 
 What ch9 changed, by stage. **Parser:** `Program` holds many declarations;
 `FunDecl` covers definitions AND prototypes (a definition *is* a
@@ -243,6 +255,21 @@ written to spec at ch5 when every function was a leaf.
   a node downstream that exists to make some position total, and the error
   disappears into working-looking code. Second time; consume the terminator on
   every path.
+- **A calling convention is a contract you can only test from outside.** A
+  single-file test proves the compiler agrees with itself — it could place
+  arguments wrongly but consistently and still pass. Linking an acorncc caller
+  against a clang-compiled callee is what proves the ABI. That is why `-c` was
+  worth eight tests: the suite's library tests exist for exactly this, and they
+  are the only ones that can catch a self-consistent error.
+- **Stack arguments are reserved, not pushed.** The caller sets aside an
+  outgoing-argument area at the bottom of its OWN frame, sized by its widest
+  call, so `sp` never moves across a call and the 16-byte alignment is
+  unrepresentable-to-break rather than maintained. Caller writes at `[sp, #0]`
+  upward, callee reads at `[fp, #16]` upward — the two frames are adjacent and
+  the arguments sit on the boundary. That area is the first thing in the frame
+  with no name in `offsets`: it is scratch shared by every call, so it is sized
+  by the maximum rather than the sum — the same reasoning as a scratch register,
+  one level down.
 - **Required lookahead is the longest shared prefix, plus one.** Call-vs-`Var`
   needs one token (the identifier is consumed either way). Function-decl vs
   var-decl needs two, because `int ident` is shared. C keeps asking this
