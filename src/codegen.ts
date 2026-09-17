@@ -389,6 +389,32 @@ function emitInstruction(
           lines.push(`\tcset\tw0, ne`);
           break;
         }
+        case "BitwiseAnd": {
+          lines.push(`\tand\tw0, w0, w1`);
+          break;
+        }
+        case "BitwiseOr": {
+          lines.push(`\torr\tw0, w0, w1`);
+          break;
+        }
+        case "BitwiseXor": {
+          lines.push(`\teor\tw0, w0, w1`);
+          break;
+        }
+        case "ShiftLeft": {
+          lines.push(`\tlsl\tw0, w0, w1`);
+          break;
+        }
+        // `asr`, not `lsr`: C's `>>` on a SIGNED operand is an arithmetic
+        // shift, sign-extending rather than zero-filling, and every value in
+        // the language is a signed int today. The machine has both and can't
+        // know which you meant — the operand's TYPE decides, which makes this
+        // the first template that will have to consult one at M5, when
+        // `unsigned` arrives and `lsr` becomes correct for it.
+        case "ShiftRight": {
+          lines.push(`\tasr\tw0, w0, w1`);
+          break;
+        }
         default: {
           const _never: never = instr;
           throw new Error(`Unhandled: ${JSON.stringify(_never)}`);

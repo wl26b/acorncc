@@ -282,10 +282,30 @@ names are pure documentation — C ignores them, `int f(int, int);` is equally
 valid — so there is nothing to bind them into, and yet the duplicate rule still
 applies. The constraint outlives the thing it constrains.
 
-**M4 remaining:** `switch`/`case` and the leftover M2–M3 operators, both in
-`extra_credit/` directories that the chapter flag has never run. Use
-`--extra-credit`. This is where "chapter green" stops being a sufficient
-definition of done — one milestone earlier than the ⚠︎ note below predicts.
+**M4 remaining**, all in `extra_credit/` directories the chapter flag has never
+run — use `--extra-credit`, which is 474 tests rather than 301. This is where
+"chapter green" stops being a sufficient definition of done, one milestone
+earlier than the ⚠︎ note below predicts.
+
+**Bitwise `& | ^ << >>` ✅** — 27 tests, and a clean measurement of what the
+front end's design bought: five tag strings, five rows in `INFIX_OPS`, five
+codegen templates, and nothing else. Adding an infix operator is *data*, not
+code. Precedence was the only decision — C puts `|` `^` `&` between `&&` and
+`==`, so `&` binds TIGHTER than equality (`x & 1 == 0` groups as
+`x & (1 == 0)`), and shifts sit between relational and additive. ch3's bp
+numbers were spaced for exactly this.
+
+The lexer's `OPERATORS` list is now sorted by length at load instead of
+hand-ordered. Through ch8 the "longer before shorter" rule was four entries
+with `--` before `-`; the new families make prefix chains three deep
+(`<` → `<<` → `<<=`, `&` → `&&` → `&=`), which is the point at which a
+hand-maintained invariant should become an enforced one.
+
+Still open: **compound assignment** (22 tests, including the `&=`/`|=`/`<<=`
+forms), **`++`/`--`** (~7, postfix only per the inventory), and
+**`switch`/`case`** (20). Plus ~23 `goto`/label tests that are deliberately out
+of scope — the inventory grep-verified minilisp has no `goto`, and this is
+exactly the case it exists to license skipping.
 
 Two bugs worth recording because neither was found by a failing test. The
 prototype's `;` was consumed only on the body-allowed path, so at block scope a

@@ -38,6 +38,24 @@ export type TokenKind =
   | ">" // greater than
   | "<=" // less than or equal
   | ">=" // greater than or equal
+  // bitwise
+  | "&" // and
+  | "|" // or
+  | "^" // xor
+  | "<<" // shift left
+  | ">>" // shift right
+  // compound assignment: read+modify+write, the lvalue evaluated once
+  | "+="
+  | "-="
+  | "*="
+  | "/="
+  | "%="
+  | "&="
+  | "|="
+  | "^="
+  | "<<="
+  | ">>="
+  | "++" // increment
   | "=" // assignment (binary, right-associative)
   | "?" // conditional operator, first half of `? :`
   | ":" // conditional operator, second half
@@ -82,38 +100,57 @@ const RE_CONSTANT = /[0-9]+/y; // Chapter 1: unsigned decimal integers only
 
 // Punctuation and operators, matched by plain string comparison.
 //
-// ORDER MATTERS: this list is scanned top to bottom and the first match wins,
-// so longer operators MUST come before any operator that is a prefix of them.
-// `--` sits before `-` so that "--x" lexes as [--, x] and never as [-, -, x].
-// That's "maximal munch": always consume the longest token that matches.
+// MAXIMAL MUNCH: always consume the longest token that matches, so `<<=` is one
+// token and never `<` `<` `=`. Through ch8 that was four hand-ordered entries
+// with `--` before `-`; the bitwise and compound-assignment families make the
+// prefix chains three deep (`<` → `<<` → `<<=`, `&` → `&&` → `&=`), at which
+// point hand-ordering is a liability rather than documentation. So the list is
+// written in whatever order reads best and SORTED BY LENGTH below — the
+// invariant is enforced instead of maintained.
 const OPERATORS: TokenKind[] = [
-  "--", // must precede "-"
   "-",
   "~",
   "+",
   "*",
   "/",
   "%",
+  "!",
   "&&",
   "||",
-  "==", // must precede "="
+  "==",
   "=",
-  "!=", // must precede "!"
-  "!",
-  "<=", // must precede "<"
+  "!=",
+  "<=",
   "<",
-  ">=", // must precede ">"
+  ">=",
   ">",
+  "&",
+  "|",
+  "^",
+  "<<",
+  ">>",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "&=",
+  "|=",
+  "^=",
+  "<<=",
+  ">>=",
+  "++",
+  "--",
   "(",
   ")",
   "{",
   "}",
   ";",
   ",",
-  // No maximal-munch hazard: nothing else starts with `?`, and C has no `::`.
   "?",
   ":",
-];
+] as TokenKind[];
+OPERATORS.sort((a, b) => b.length - a.length);
 
 export function lex(source: string): Token[] {
   const tokens: Token[] = [];

@@ -254,7 +254,12 @@ export type BinaryOp =
   | "NotEqual"
   // logical (short-circuit)
   | "And"
-  | "Or";
+  | "Or"
+  | "BitwiseAnd"
+  | "BitwiseOr"
+  | "BitwiseXor"
+  | "ShiftLeft"
+  | "ShiftRight";
 
 // Assignment is NOT a BinaryOp: every operator in that union evaluates both
 // operands to values and combines them, whereas assignment needs its left

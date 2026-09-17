@@ -92,6 +92,17 @@ const INFIX_OPS: Partial<Record<TokenKind, OpEntry>> = {
   "||": { bp: 5, node: "Binary", op: "Or" },
   "?": { bp: 3, node: "Conditional", rightAssoc: true },
   "=": { bp: 1, node: "Assign", rightAssoc: true },
+  // Bitwise, slotting into the gaps ch3 left for exactly this. C puts these
+  // BETWEEN `&&` and `==`, which is the single most surprising fact about C's
+  // precedence: `&` binds tighter than `==`, so `x & 1 == 0` groups as
+  // `x & (1 == 0)` and is the language's most famous precedence bug.
+  "|": { bp: 15, node: "Binary", op: "BitwiseOr" },
+  "^": { bp: 20, node: "Binary", op: "BitwiseXor" },
+  "&": { bp: 25, node: "Binary", op: "BitwiseAnd" },
+  // Shifts bind tighter than relational, looser than additive — so
+  // `a << 2 + 1` is `a << (2 + 1)`, another one worth knowing.
+  "<<": { bp: 40, node: "Binary", op: "ShiftLeft" },
+  ">>": { bp: 40, node: "Binary", op: "ShiftRight" },
 };
 
 // <program> ::= { <function-declaration> }

@@ -186,7 +186,15 @@ export type TackyBinaryOp =
   | "GreaterOrEqual"
   // equality
   | "Equal"
-  | "NotEqual";
+  | "NotEqual"
+  // bitwise. These belong here and `And`/`Or` don't, for the reason above:
+  // `&` and `|` read both operands unconditionally, so each is one machine
+  // instruction with no branch in sight.
+  | "BitwiseAnd"
+  | "BitwiseOr"
+  | "BitwiseXor"
+  | "ShiftLeft"
+  | "ShiftRight";
 
 // --- Debug printing -------------------------------------------------------
 //

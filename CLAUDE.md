@@ -203,6 +203,14 @@ and ships no ARM64 version. First time the cost of the ARM64 decision has been
 paid in a test that cannot run rather than in translation effort. The property
 it checks holds anyway, and by construction — `sp` never moves at a call.
 
+**Bitwise `& | ^ << >>` done** — 27 extra-credit tests, and the whole cost was
+five tag strings, five Pratt rows and five codegen templates. No parser
+function, no `resolve` case, no lowering case, no IR shape: adding an infix
+operator is *data*, which is what the Pratt table and the `Binary` node were
+for. The lexer's `OPERATORS` list is now **sorted by length at load** rather
+than hand-ordered, because the new families make prefix chains three deep
+(`<` → `<<` → `<<=`), and maximal munch is better enforced than maintained.
+
 **Next → the rest of M4**, and both remaining pieces live in `extra_credit/`
 directories the chapter flag has never covered: **`switch`/`case`** (chapter 8
 extra credit — minilisp-relevant, since all six of its `break`s are
@@ -274,6 +282,13 @@ written to spec at ch5 when every function was a leaf.
   with no name in `offsets`: it is scratch shared by every call, so it is sized
   by the maximum rather than the sum — the same reasoning as a scratch register,
   one level down.
+- **The exit-status channel is 8 bits wide, so probes must funnel the
+  difference down into the low byte.** `(0-8) >> 1` emitted with `lsr` instead
+  of `asr` gives 2147483644 rather than −4 — and both return **252** as an exit
+  code, because the low bytes agree. The probe that caught it was `b < 0`,
+  which turns 32 bits of disagreement into one. Every test in the suite reports
+  through `main`'s return value, so any bug confined to the upper 24 bits is
+  invisible to it.
 - **Required lookahead is the longest shared prefix, plus one.** Call-vs-`Var`
   needs one token (the identifier is consumed either way). Function-decl vs
   var-decl needs two, because `int ident` is shared. C keeps asking this
